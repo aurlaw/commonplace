@@ -61,3 +61,7 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 .DS_Store
+
+# Xcode build output and user state
+DerivedData/
+*.xcuserstate
