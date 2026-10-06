@@ -14,10 +14,14 @@ struct CommonplaceApp: App {
 
     init() {
         container = Result {
-            // Unit tests are hosted in the app; they must never create the CloudKit store.
-            try Self.isRunningTests
-                ? ModelContainerFactory.makeInMemory()
-                : ModelContainerFactory.makePersistent()
+            if Self.isRunningTests {
+                // Unit tests are hosted in the app; they must never create the CloudKit store.
+                return try ModelContainerFactory.makeInMemory()
+            }
+            if AppConfig.usesSampleData {
+                return try SampleData.makeContainer()
+            }
+            return try ModelContainerFactory.makePersistent()
         }
     }
 
@@ -25,8 +29,9 @@ struct CommonplaceApp: App {
         WindowGroup {
             switch container {
             case .success(let container):
-                ContentView()
+                RootView()
                     .modelContainer(container)
+                    .environment(\.referenceDate, Self.usesSampleData ? SampleData.now : nil)
             case .failure(let error):
                 ContainerErrorView(message: error.localizedDescription)
             }
@@ -35,5 +40,10 @@ struct CommonplaceApp: App {
 
     private static var isRunningTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    /// Whether the running app is showing the seed (shell mode).
+    private static var usesSampleData: Bool {
+        AppConfig.usesSampleData && !isRunningTests
     }
 }

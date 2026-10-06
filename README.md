@@ -6,7 +6,7 @@ This is a personal app, sideloaded rather than distributed through the App Store
 
 ## Status
 
-Early development. The project scaffold, data model, and CloudKit-backed store are in place; the app currently launches to a placeholder screen. The UI and features below are planned, not built.
+Early development. The data model and CloudKit-backed store are in place, and every screen exists as a visual shell: the app currently runs on built-in sample data and nothing you do in it is saved. The features below are planned, not built.
 
 ## Planned features
 

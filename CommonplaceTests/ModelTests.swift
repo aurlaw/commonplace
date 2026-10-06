@@ -26,7 +26,7 @@ struct ModelTests {
         #expect(topic.title == "")
         #expect(topic.summary == "")
         #expect(topic.colorName == TopicColor.defaultColor.rawValue)
-        #expect(topic.color == .blue)
+        #expect(topic.color == .indigo)
         #expect(topic.isArchived == false)
         #expect(topic.createdAt >= before)
         #expect(topic.deletedAt == nil)
@@ -195,13 +195,13 @@ struct ModelTests {
         #expect(fetched.color == .purple)
     }
 
-    @Test func topicColorFallsBackToBlueForUnknownRawValue() {
+    @Test func topicColorFallsBackToDefaultForUnknownRawValue() {
         let topic = Topic()
         context.insert(topic)
 
         topic.colorName = "chartreuse"
 
-        #expect(topic.color == .blue)
+        #expect(topic.color == .indigo)
     }
 
     // MARK: External storage
