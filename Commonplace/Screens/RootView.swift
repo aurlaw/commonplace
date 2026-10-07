@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 /// Destinations that aren't a model value.
@@ -38,4 +39,12 @@ struct RootView: View {
     RootView()
         .sampleData()
         .preferredColorScheme(.dark)
+}
+
+// The one preview without the seed: a fresh install has no topics.
+#Preview("Empty") {
+    if let container = try? ModelContainerFactory.makeInMemory() {
+        RootView()
+            .modelContainer(container)
+    }
 }

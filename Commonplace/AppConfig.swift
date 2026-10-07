@@ -1,10 +1,11 @@
 import SwiftUI
 
 nonisolated enum AppConfig {
-    /// Shell mode (I1b): the app runs on a seeded in-memory container and nothing persists.
+    /// Shell mode: when `true` the app runs on a seeded in-memory container and nothing persists.
     ///
-    /// **I2 flips this to `false`**, which switches the app to the persistent CloudKit container.
-    static let usesSampleData = true
+    /// Off since I2 — the app uses the persistent CloudKit container. Kept as a switch so the
+    /// shell can be turned back on for design work.
+    static let usesSampleData = false
 }
 
 extension EnvironmentValues {

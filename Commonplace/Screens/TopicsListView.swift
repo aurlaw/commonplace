@@ -14,6 +14,10 @@ struct TopicsListView: View {
     private var trashedEntries: [Entry]
 
     @Environment(\.referenceDate) private var referenceDate
+    @Environment(\.modelContext) private var modelContext
+    /// A per-device preference, not synced. Stored by raw value.
+    @AppStorage("topicSort") private var storedSort = TopicSort.recentActivity.rawValue
+    @State private var saveError: String?
     @State private var searchText = ""
     @State private var isArchivedExpanded = false
     @State private var composerMode: ComposerMode?
@@ -22,19 +26,18 @@ struct TopicsListView: View {
     var body: some View {
         List {
             Section {
-                ForEach(activeTopics) { topic in
-                    NavigationLink(value: topic) {
-                        TopicRow(topic: topic)
-                    }
+                if sections.live.isEmpty {
+                    emptyState
+                }
+                ForEach(sections.live) { topic in
+                    topicLink(topic)
                 }
             }
-            if !archivedTopics.isEmpty {
+            if !sections.archived.isEmpty {
                 Section {
                     if isArchivedExpanded {
-                        ForEach(archivedTopics) { topic in
-                            NavigationLink(value: topic) {
-                                TopicRow(topic: topic)
-                            }
+                        ForEach(sections.archived) { topic in
+                            topicLink(topic)
                         }
                     }
                 } header: {
@@ -65,6 +68,8 @@ struct TopicsListView: View {
                 }
                 .buttonStyle(.glassProminent)
                 .accessibilityLabel("New Entry")
+                // An entry needs a live topic to go into.
+                .disabled(sections.live.isEmpty)
             }
         }
         .sheet(item: $composerMode) { mode in
@@ -73,14 +78,49 @@ struct TopicsListView: View {
         .sheet(item: $topicEditorMode) { mode in
             TopicEditorView(mode: mode)
         }
+        .saveErrorAlert($saveError)
     }
 
-    private var activeTopics: [Topic] {
-        Topic.sortedByRecentActivity(topics.filter { !$0.isArchived })
+    private var sort: TopicSort {
+        TopicSort(storedValue: storedSort)
     }
 
-    private var archivedTopics: [Topic] {
-        Topic.sortedByRecentActivity(topics.filter(\.isArchived))
+    private var sections: TopicListSections {
+        TopicListSections(topics: topics, sort: sort)
+    }
+
+    /// A row with the leading swipe that archives or unarchives. The trailing swipe is left
+    /// free for Move to Trash.
+    private func topicLink(_ topic: Topic) -> some View {
+        NavigationLink(value: topic) {
+            TopicRow(topic: topic)
+        }
+        .swipeActions(edge: .leading) {
+            Button(
+                topic.isArchived ? "Unarchive" : "Archive",
+                systemImage: topic.isArchived ? "tray.and.arrow.up" : "archivebox"
+            ) {
+                withAnimation {
+                    topic.isArchived.toggle()
+                    saveError = modelContext.saveOrRollback()
+                }
+            }
+        }
+    }
+
+    /// Shown in place of the live topics, above the Archived section when there is one.
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("No Topics", systemImage: "rectangle.stack")
+        } description: {
+            Text("Create a topic to start logging entries.")
+        } actions: {
+            Button("New Topic") {
+                topicEditorMode = .new
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .listRowBackground(Color.clear)
     }
 
     private var trashCount: Int {
@@ -98,7 +138,7 @@ struct TopicsListView: View {
                     .font(.headline)
                     .foregroundStyle(.primary)
                 Spacer()
-                Text(archivedTopics.count, format: .number)
+                Text(sections.archived.count, format: .number)
                     .font(.subheadline)
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.bold))
@@ -109,22 +149,21 @@ struct TopicsListView: View {
         }
         .buttonStyle(.plain)
         .textCase(nil)
-        .accessibilityLabel("Archived, \(archivedTopics.count)")
+        .accessibilityLabel("Archived, \(sections.archived.count)")
         .accessibilityValue(isArchivedExpanded ? "Expanded" : "Collapsed")
     }
 
     private var overflowMenu: some View {
         Menu {
             Menu {
-                // Inert in the shell: I2 makes the sort order real.
-                Picker("Sort By", selection: .constant(TopicSort.recentActivity)) {
+                Picker("Sort By", selection: sortBinding) {
                     ForEach(TopicSort.allCases) { sort in
                         Text(sort.title).tag(sort)
                     }
                 }
             } label: {
                 Label("Sort By", systemImage: "arrow.up.arrow.down")
-                Text(TopicSort.recentActivity.title)
+                Text(sort.title)
             }
             Divider()
             Button {
@@ -142,18 +181,51 @@ struct TopicsListView: View {
             Label("More", systemImage: "ellipsis")
         }
     }
+
+    private var sortBinding: Binding<TopicSort> {
+        Binding(
+            get: { sort },
+            set: { storedSort = $0.rawValue }
+        )
+    }
 }
 
+/// How the topics list is ordered. Applies to both the live and Archived sections.
 enum TopicSort: String, CaseIterable, Identifiable {
     case recentActivity
     case name
 
     var id: Self { self }
 
+    /// A stored raw value, falling back to Recent Activity when it isn't recognized.
+    init(storedValue: String) {
+        self = TopicSort(rawValue: storedValue) ?? .recentActivity
+    }
+
+    func sorted(_ topics: [Topic]) -> [Topic] {
+        switch self {
+        case .recentActivity: Topic.sortedByRecentActivity(topics)
+        case .name: Topic.sortedByName(topics)
+        }
+    }
+
     var title: String {
         switch self {
         case .recentActivity: "Recent Activity"
         case .name: "Name"
         }
+    }
+}
+
+/// The topics list's two sections, each in the chosen order.
+struct TopicListSections {
+    /// Not archived.
+    let live: [Topic]
+    let archived: [Topic]
+
+    /// - Parameter topics: Topics that are not in Trash.
+    init(topics: [Topic], sort: TopicSort) {
+        live = sort.sorted(topics.filter { !$0.isArchived })
+        archived = sort.sorted(topics.filter(\.isArchived))
     }
 }

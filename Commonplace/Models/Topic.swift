@@ -8,6 +8,8 @@ extension SchemaV1 {
         var summary: String = ""
         var colorName: String = TopicColor.defaultColor.rawValue
         var isArchived: Bool = false
+        /// Whether new entries in this topic capture location by default.
+        var capturesLocation: Bool = false
         var createdAt: Date = Date.now
         var deletedAt: Date? = nil
 

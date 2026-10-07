@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 /// A topic's timeline: tinted header, then entries grouped by month, newest first.
@@ -5,9 +6,11 @@ struct TopicDetailView: View {
     let topic: Topic
 
     @Environment(\.referenceDate) private var referenceDate
+    @Environment(\.modelContext) private var modelContext
     @State private var composerMode: ComposerMode?
     @State private var topicEditorMode: TopicEditorMode?
     @State private var isConfirmingDelete: Bool
+    @State private var saveError: String?
 
     init(topic: Topic, isConfirmingDelete: Bool = false) {
         self.topic = topic
@@ -73,6 +76,7 @@ struct TopicDetailView: View {
         } message: {
             Text("This can’t be undone.")
         }
+        .saveErrorAlert($saveError)
     }
 
     private var sections: [EntryTimeline.MonthSection] {
@@ -90,6 +94,13 @@ struct TopicDetailView: View {
                 topicEditorMode = .edit(topic)
             }
             Divider()
+            Button(
+                topic.isArchived ? "Unarchive Topic" : "Archive Topic",
+                systemImage: topic.isArchived ? "tray.and.arrow.up" : "archivebox"
+            ) {
+                topic.isArchived.toggle()
+                saveError = modelContext.saveOrRollback()
+            }
             Button("Move to Trash", systemImage: "trash") {}
             Button("Delete Permanently", systemImage: "trash.slash", role: .destructive) {
                 isConfirmingDelete = true

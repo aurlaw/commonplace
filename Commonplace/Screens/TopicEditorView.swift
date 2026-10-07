@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 enum TopicEditorMode: Identifiable {
@@ -12,8 +13,8 @@ enum TopicEditorMode: Identifiable {
     }
 }
 
-/// The editor's working copy. Nothing in it is written back to the store in the shell.
-struct TopicDraft {
+/// The editor's working copy, written to the store only on Create / Save.
+struct TopicDraft: Equatable {
     var title = ""
     var summary = ""
     var color = TopicColor.defaultColor
@@ -31,20 +32,60 @@ struct TopicDraft {
             color = topic.color
         }
     }
+
+    /// The draft as it would be stored: title and summary without surrounding whitespace.
+    var trimmed: TopicDraft {
+        TopicDraft(
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            summary: summary.trimmingCharacters(in: .whitespacesAndNewlines),
+            color: color
+        )
+    }
+
+    /// A topic needs a title; duplicates are allowed.
+    var isValid: Bool {
+        !trimmed.title.isEmpty
+    }
+
+    /// Whether saving would store something different from `original`.
+    func isDirty(comparedTo original: TopicDraft) -> Bool {
+        trimmed != original.trimmed
+    }
+
+    /// A new, uninserted topic holding the trimmed values.
+    func makeTopic() -> Topic {
+        let values = trimmed
+        return Topic(title: values.title, summary: values.summary, color: values.color)
+    }
+
+    /// Writes the trimmed values to an existing topic.
+    func apply(to topic: Topic) {
+        let values = trimmed
+        topic.title = values.title
+        topic.summary = values.summary
+        topic.color = values.color
+    }
 }
 
-/// New / Edit Topic sheet. Visual only: Cancel and Create / Save both just dismiss.
+/// New / Edit Topic sheet. Create inserts a topic; Save writes back to the edited one.
 struct TopicEditorView: View {
     let mode: TopicEditorMode
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @State private var draft: TopicDraft
+    @State private var isConfirmingDiscard = false
+    @State private var saveError: String?
     @FocusState private var isTitleFocused: Bool
+
+    /// What the sheet opened with, for detecting unsaved changes.
+    private let original: TopicDraft
 
     /// - Parameter draft: Overrides the draft derived from `mode`; previews use it to show a
     ///   specific state.
     init(mode: TopicEditorMode, draft: TopicDraft? = nil) {
         self.mode = mode
+        original = TopicDraft(mode: mode)
         _draft = State(initialValue: draft ?? TopicDraft(mode: mode))
     }
 
@@ -69,19 +110,55 @@ struct TopicEditorView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
-                        dismiss()
+                        if isDirty {
+                            isConfirmingDiscard = true
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .confirmationDialog(
+                        "Discard changes?",
+                        isPresented: $isConfirmingDiscard,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Discard Changes", role: .destructive) {
+                            dismiss()
+                        }
+                        Button("Keep Editing", role: .cancel) {}
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isEditing ? "Save" : "Create") {
-                        dismiss()
+                        save()
                     }
                     .buttonStyle(.glassProminent)
+                    .disabled(!draft.isValid)
                 }
             }
         }
+        // With unsaved changes, swipe-down is blocked so Cancel's confirmation is the way out.
+        .interactiveDismissDisabled(isDirty)
+        .saveErrorAlert($saveError)
         .onAppear {
             isTitleFocused = true
+        }
+    }
+
+    private var isDirty: Bool {
+        draft.isDirty(comparedTo: original)
+    }
+
+    /// Dismisses on success. On failure the sheet stays open with the draft intact.
+    private func save() {
+        switch mode {
+        case .new:
+            modelContext.insert(draft.makeTopic())
+        case .edit(let topic):
+            draft.apply(to: topic)
+        }
+        saveError = modelContext.saveOrRollback()
+        if saveError == nil {
+            dismiss()
         }
     }
 

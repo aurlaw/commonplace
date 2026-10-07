@@ -62,6 +62,49 @@ struct ModelTests {
         #expect(photo.entry == nil)
     }
 
+    // MARK: Location fields
+
+    @Test func newTopicDoesNotCaptureLocation() throws {
+        context.insert(Topic())
+        try context.save()
+
+        let topic = try #require(try context.fetch(FetchDescriptor<Topic>()).first)
+        #expect(topic.capturesLocation == false)
+    }
+
+    @Test func newEntryHasNoLocation() throws {
+        context.insert(Entry())
+        try context.save()
+
+        let entry = try #require(try context.fetch(FetchDescriptor<Entry>()).first)
+        #expect(entry.latitude == nil)
+        #expect(entry.longitude == nil)
+        #expect(entry.placeName == nil)
+        #expect(entry.hasLocation == false)
+    }
+
+    @Test func hasLocationNeedsBothCoordinates() {
+        let entry = Entry()
+        context.insert(entry)
+
+        entry.latitude = 34.8697
+        #expect(entry.hasLocation == false)
+
+        entry.latitude = nil
+        entry.longitude = -111.7610
+        #expect(entry.hasLocation == false)
+
+        entry.latitude = 34.8697
+        #expect(entry.hasLocation)
+
+        // A place name alone is not a location, and a location needs no place name.
+        #expect(entry.placeName == nil)
+        entry.latitude = nil
+        entry.longitude = nil
+        entry.placeName = "Sedona, AZ"
+        #expect(entry.hasLocation == false)
+    }
+
     // MARK: Relationships
 
     @Test func topicAndEntryLinkWhenSetFromEntrySide() throws {
