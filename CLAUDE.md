@@ -9,7 +9,7 @@ Phase briefs live in the Tech Obsidian vault under `commonplace/phases/`.
 - `Commonplace.xcodeproj` — Xcode project. **Never edit it** (including `project.pbxproj`)
 - `Commonplace/` — app sources
   - `Models/` — `SchemaV1` models and `TopicColor` (Foundation only, no SwiftUI)
-  - `Persistence/` — `ModelContainerFactory` and `ModelContext.saveOrRollback()`
+  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, and `LastUsedTopic`
   - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`) and the pure `EntryTimeline` helpers
   - `Screens/` — one file per screen or sheet; `RootView` owns the navigation stack
   - `SampleData/` — the seed, placeholder images, and `PreviewContainer`
@@ -62,7 +62,19 @@ Built with Xcode 27 (iOS 27 SDK); the deployment target is **iOS 26**. Any API n
 
 Save explicitly after each user action with `modelContext.saveOrRollback()` rather than relying on autosave, so the change reaches the store (and CloudKit) promptly. It returns the error message on failure, after rolling the context back; show it with `.saveErrorAlert(_:)`.
 
-Editing sheets work on a draft value (`TopicDraft`) and write to the model only on save. Keep the draft-to-model logic (`trimmed`, `isValid`, `isDirty(comparedTo:)`, `makeTopic()`, `apply(to:)`) on the draft, where it is unit-tested, not inline in the view.
+Editing sheets work on a draft value (`TopicDraft`, `EntryDraft`) and write to the model only on save. Keep the draft-to-model logic (`trimmed` / `trimmedBody`, `isValid`, `isDirty(comparedTo:)`, `makeTopic()` / `makeEntry()`, `apply(to:)`) on the draft, where it is unit-tested, not inline in the view.
+
+Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set `interactiveDismissDisabled(isDirty)`. SwiftUI has no callback for an attempted swipe-dismiss, so with unsaved changes the swipe is blocked and Cancel is the way out.
+
+### Entries
+
+- **An entry needs a topic and text.** Save is disabled until the trimmed body is non-empty
+- The body is trimmed of leading and trailing whitespace and newlines on save; inner line breaks are kept
+- **No future dates:** the date picker ends at the moment the composer opened. Back-dating is fine
+- The topic can't be changed when editing. `EntryDraft.apply(to:)` writes the date and body only — never photos, location, topic, `createdAt`, or `deletedAt`
+- Dictation state and its grey pending text are never written to the body
+- **Last-used topic** is a per-device preference in `@AppStorage(LastUsedTopic.storageKey)`: the topic's `PersistentIdentifier` as JSON, not synced. It is recorded when a **new** entry is saved (edits don't change it). "+ Entry" on the topics list opens on it if it is still live and not archived, otherwise on the first topic by recent activity; the rules are in `LastUsedTopic.resolve(stored:among:)`
+- **Topic screens read entries through the `Topic.entries` relationship**, not an `@Query`. `EntryDraftTests` checks that saving an entry into a topic, and editing one, is reported through Observation on the same context, which is what refreshes the timeline, the list row, and entry detail. If a screen is ever seen not to refresh (for example after a CloudKit import), switch that screen to an `@Query` filtered by topic rather than forcing a refresh
 
 ### Topics list
 
@@ -76,7 +88,7 @@ Editing sheets work on a draft value (`TopicDraft`) and write to the model only 
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
 
 - The seed now exists for previews (and the switch). `SampleData.seed(into:)` has a `precondition` that the container is in-memory with CloudKit disabled. Sample data must never reach the persistent container
-- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I2: composer save and entry editing, Move to Trash, Delete Permanently, Trash actions, Settings retention, photos, dictation, and search
+- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I3: photo add and remove, location, Move to Trash, Delete Permanently, Trash actions, Settings retention, dictation (the button only toggles its visual state), search, and entry paging
 - Seed dates are fixed (September–October 2026) around `SampleData.now`, which previews pass as `referenceDate`
 - Seed photos are generated at seed time (`PlaceholderImage`); no image files are bundled or downloaded
 

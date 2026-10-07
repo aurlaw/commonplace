@@ -6,7 +6,7 @@ This is a personal app, sideloaded rather than distributed through the App Store
 
 ## Status
 
-Early development. The app runs on the CloudKit-backed store and topics work: create, edit, archive, and sort. Every other screen exists as a visual shell, so entries, photos, dictation, Trash, and search are planned, not built.
+Early development. The app runs on the CloudKit-backed store, and topics and text entries work: create, edit, archive, and sort topics; write, back-date, and edit entries. The rest exists as a visual shell, so photos, dictation, Trash, and search are planned, not built.
 
 ## Planned features
 

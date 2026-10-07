@@ -18,7 +18,7 @@ enum ComposerMode: Identifiable {
     }
 }
 
-/// The composer's working copy. Nothing in it is written back to the store in the shell.
+/// The composer's working copy, written to the store only on Save.
 struct EntryDraft {
     var topic: Topic?
     var date: Date
@@ -52,9 +52,39 @@ struct EntryDraft {
             photos = entry.sortedPhotos
         }
     }
+
+    /// The body as it would be stored: no surrounding whitespace or newlines; inner line
+    /// breaks kept.
+    var trimmedBody: String {
+        body.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// An entry needs a topic and some text.
+    var isValid: Bool {
+        topic != nil && !trimmedBody.isEmpty
+    }
+
+    /// Whether saving would store something different from `original`.
+    ///
+    /// Compares the trimmed body, the date, and the topic. Dictation state and photos never
+    /// make a draft dirty.
+    func isDirty(comparedTo original: EntryDraft) -> Bool {
+        trimmedBody != original.trimmedBody || date != original.date || topic !== original.topic
+    }
+
+    /// A new, uninserted entry with the topic, date, and trimmed body.
+    func makeEntry() -> Entry {
+        Entry(body: trimmedBody, date: date, topic: topic)
+    }
+
+    /// Writes the date and trimmed body to an existing entry, and nothing else.
+    func apply(to entry: Entry) {
+        entry.date = date
+        entry.body = trimmedBody
+    }
 }
 
-/// New / Edit Entry sheet. Visual only: Cancel and Save both just dismiss.
+/// New / Edit Entry sheet. Save inserts a new entry or writes back to the edited one.
 struct EntryComposerView: View {
     let mode: ComposerMode
     let now: Date
@@ -63,8 +93,15 @@ struct EntryComposerView: View {
     private var topics: [Topic]
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    /// A per-device preference, not synced. See `LastUsedTopic`.
+    @AppStorage(LastUsedTopic.storageKey) private var lastUsedTopic: Data?
     @State private var draft: EntryDraft
+    /// What the sheet opened with, for detecting unsaved changes.
+    @State private var original: EntryDraft
     @State private var isPickingDate = false
+    @State private var isConfirmingDiscard = false
+    @State private var saveError: String?
     @FocusState private var isBodyFocused: Bool
 
     /// - Parameter draft: Overrides the draft derived from `mode`; previews use it to show a
@@ -73,6 +110,7 @@ struct EntryComposerView: View {
         self.mode = mode
         self.now = now
         _draft = State(initialValue: draft ?? EntryDraft(mode: mode, now: now))
+        _original = State(initialValue: EntryDraft(mode: mode, now: now))
     }
 
     var body: some View {
@@ -88,24 +126,70 @@ struct EntryComposerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
-                        dismiss()
+                        if isDirty {
+                            isConfirmingDiscard = true
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .confirmationDialog(
+                        "Discard changes?",
+                        isPresented: $isConfirmingDiscard,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Discard Changes", role: .destructive) {
+                            dismiss()
+                        }
+                        Button("Keep Editing", role: .cancel) {}
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        dismiss()
+                        save()
                     }
                     .buttonStyle(.glassProminent)
+                    .disabled(!draft.isValid)
                 }
             }
         }
+        // With unsaved changes, swipe-down is blocked so Cancel's confirmation is the way out.
+        .interactiveDismissDisabled(isDirty)
+        .saveErrorAlert($saveError)
         .onAppear {
             if isFromList, draft.topic == nil {
-                // Stands in for "last-used topic" until I3 persists one.
-                draft.topic = Topic.sortedByRecentActivity(topics).first
+                // The default topic is where the sheet starts, not a change to it.
+                let topic = LastUsedTopic.resolve(stored: lastUsedTopic, among: topics)
+                draft.topic = topic
+                original.topic = topic
             }
             isBodyFocused = draft.dictation == .idle
         }
+    }
+
+    private var isDirty: Bool {
+        draft.isDirty(comparedTo: original)
+    }
+
+    /// Dismisses on success. On failure the sheet stays open with the draft intact.
+    private func save() {
+        if case .edit(let entry) = mode {
+            draft.apply(to: entry)
+        } else {
+            modelContext.insert(draft.makeEntry())
+        }
+        saveError = modelContext.saveOrRollback()
+        guard saveError == nil else {
+            return
+        }
+        if !isEditing, let topic = draft.topic {
+            // Only new entries move the last-used topic; edits don't.
+            lastUsedTopic = LastUsedTopic.encode(topic)
+        }
+        dismiss()
+    }
+
+    private var isEditing: Bool {
+        if case .edit = mode { true } else { false }
     }
 
     private var isFromList: Bool {
@@ -113,7 +197,7 @@ struct EntryComposerView: View {
     }
 
     private var title: String {
-        if case .edit = mode { "Edit Entry" } else { "New Entry" }
+        isEditing ? "Edit Entry" : "New Entry"
     }
 
     /// The topic shown under the title; `nil` when the chip row carries the topic instead.
@@ -152,7 +236,8 @@ struct EntryComposerView: View {
             .accessibilityLabel("Date")
             .accessibilityValue(EntryTimeline.composerDate(draft.date, now: now))
             .popover(isPresented: $isPickingDate) {
-                DatePicker("Date", selection: $draft.date)
+                // Back-dating is fine; future dates are not.
+                DatePicker("Date", selection: $draft.date, in: ...now)
                     .datePickerStyle(.graphical)
                     .padding()
                     .frame(minWidth: 320)
