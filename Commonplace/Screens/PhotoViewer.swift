@@ -19,9 +19,17 @@ struct PhotoViewer: View {
         NavigationStack {
             TabView(selection: $selection) {
                 ForEach(Array(photos.enumerated()), id: \.element.id) { index, photo in
-                    PhotoPage(data: photo.imageData ?? photo.thumbnailData)
-                        .tag(index)
-                        .accessibilityLabel("Photo \(index + 1) of \(photos.count)")
+                    // Only the visible page holds a full-size bitmap.
+                    DownsampledPhotoImage(
+                        photo: photo,
+                        maxPixelSize: PhotoLimits.imageMaxPixelSize,
+                        contentMode: .fit,
+                        isActive: index == selection
+                    )
+                    .tag(index)
+                    .accessibilityElement()
+                    .accessibilityAddTraits(.isImage)
+                    .accessibilityLabel("Photo \(index + 1) of \(photos.count)")
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
@@ -47,7 +55,7 @@ struct PhotoViewer: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    // Inert in the shell.
+                    // Inert: sharing isn't planned yet.
                     Button("Share", systemImage: "square.and.arrow.up") {}
                 }
             }
@@ -74,20 +82,6 @@ struct PhotoViewer: View {
         }
         .animation(.default, value: selection)
         .padding(.bottom, 12)
-    }
-}
-
-private struct PhotoPage: View {
-    let data: Data?
-
-    var body: some View {
-        if let data, let image = UIImage(data: data) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-        } else {
-            Rectangle().fill(.fill.tertiary)
-        }
     }
 }
 

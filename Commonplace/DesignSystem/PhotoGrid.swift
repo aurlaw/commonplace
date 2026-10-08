@@ -11,7 +11,7 @@ struct PhotoGrid: View {
                 Button {
                     onSelect(index)
                 } label: {
-                    PhotoImage(data: photo.imageData ?? photo.thumbnailData)
+                    tile(for: photo, at: index)
                         .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
@@ -20,6 +20,21 @@ struct PhotoGrid: View {
         }
         .clipShape(.rect(cornerRadius: 14))
     }
+
+    /// Small tiles show the stored thumbnail. Large tiles (the hero, or both tiles of a
+    /// two-photo entry) show the full image downsampled, never the full-size bitmap.
+    @ViewBuilder
+    private func tile(for photo: Photo, at index: Int) -> some View {
+        if index == 0 || photos.count <= 2 {
+            DownsampledPhotoImage(photo: photo, maxPixelSize: Self.largeTilePixelSize)
+                .accessibilityHidden(true)
+        } else {
+            PhotoImage(data: photo.thumbnailData)
+        }
+    }
+
+    /// Enough for a full-width tile on a 3x screen.
+    private static let largeTilePixelSize = 1200
 }
 
 /// Three columns. With three or more tiles the first is a 2×2 hero; one or two tiles share the

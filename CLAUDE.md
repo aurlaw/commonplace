@@ -9,7 +9,7 @@ Phase briefs live in the Tech Obsidian vault under `commonplace/phases/`.
 - `Commonplace.xcodeproj` — Xcode project. **Never edit it** (including `project.pbxproj`)
 - `Commonplace/` — app sources
   - `Models/` — `SchemaV1` models and `TopicColor` (Foundation only, no SwiftUI)
-  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, and `LastUsedTopic`
+  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, and `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`)
   - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`) and the pure `EntryTimeline` helpers
   - `Screens/` — one file per screen or sheet; `RootView` owns the navigation stack
   - `SampleData/` — the seed, placeholder images, and `PreviewContainer`
@@ -33,7 +33,7 @@ No device builds, signing or capability changes, git operations, or CloudKit Con
 
 ## Dependencies
 
-No third-party packages, including test helpers and formatters. Apple frameworks only: SwiftUI, SwiftData, PhotosUI, Speech, AVFoundation, CoreLocation, MapKit, LocalAuthentication.
+No third-party packages, including test helpers and formatters. Apple frameworks only: SwiftUI, SwiftData, PhotosUI, ImageIO, CoreImage, Speech, AVFoundation, CoreLocation, MapKit, LocalAuthentication.
 
 ## Concurrency (Swift 6)
 
@@ -68,7 +68,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 
 ### Entries
 
-- **An entry needs a topic and text.** Save is disabled until the trimmed body is non-empty
+- **An entry needs a topic, and text or at least one photo.** Save is disabled until then, and while picked photos are still processing
 - The body is trimmed of leading and trailing whitespace and newlines on save; inner line breaks are kept
 - **No future dates:** the date picker ends at the moment the composer opened. Back-dating is fine
 - The topic can't be changed when editing. `EntryDraft.apply(to:)` writes the date and body only — never photos, location, topic, `createdAt`, or `deletedAt`
@@ -82,6 +82,17 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - Sorting is done in memory, because Recent Activity depends on the computed `lastEntryDate`
 - Duplicate topic titles are allowed
 - Archived topics stay fully usable; archiving only moves them to the Archived section
+
+### Photos
+
+- **Library only, no camera.** `PhotosPicker` runs out of process, so there are no photo-library or camera usage descriptions and no `PHPhotoLibrary` authorization
+- The picker uses `preferredItemEncoding: .compatible`, so Photos hands over a converted copy rather than the original file. This is deliberate: RAW and some imported TIFF-based photos failed to downsample as originals
+- **Sizes and limits are constants in `PhotoLimits`:** stored image ≤ 3000 px long edge at JPEG 0.8, thumbnail ≤ 400 px at JPEG 0.7, at most 20 photos per entry. The picker's selection limit is the remaining slots, and `EntryDraft.addPhoto(_:)` enforces the limit too
+- **`ImageProcessor`** (protocol, injected through the `imageProcessor` environment value; `ImageIOProcessor` is the real one) turns picked data into a `ProcessedImage`. It downsamples with ImageIO, bakes in EXIF orientation, never upscales, and drops all metadata including GPS. When `CGImageSourceCreateThumbnailAtIndex` fails (seen on a device with imported, TIFF-based RAW photos, which ImageIO could neither thumbnail nor decode), `ImageDownsampler` falls back in order to: Core Image's RAW pipeline (`CIRAWFilter`), the largest image in the file ImageIO can decode, and last the file's embedded preview, which may be small. The fallbacks use much more memory than the fast path. `process` is `@concurrent`, so it runs off the main actor; picked photos are processed one at a time, in pick order
+- **`DraftPhoto`** is what the composer holds: `.existing(Photo)` for saved photos and `.new(id:image:thumbnail:)` for picked ones. New photos are values, not inserted models, until Save, so Cancel or a failed save can't leave orphaned `Photo` records
+- `EntryDraft.applyPhotos(to:in:)` makes the entry's photos match the draft for new and edited entries alike: it inserts new photos, deletes dropped ones, and rewrites `order` 0…n-1. It touches nothing else on the entry. Adding or removing a photo makes the draft dirty
+- **Photo hard-delete exception:** removing a photo in the composer calls `modelContext.delete(photo)` on Save, with no Trash and no confirmation. This is the one user-facing delete outside permanent delete and purge. Cancel discards the removal
+- **Never show a full-size bitmap in a grid or strip.** Small tiles and strips use `thumbnailData` through `PhotoImage`. Anything larger uses `DownsampledPhotoImage`, which decodes `imageData` off the main actor at a stated pixel size and shows the thumbnail until it is ready (and whenever `imageData` is still `nil` after a sync). The viewer keeps a full-size bitmap for the visible page only
 
 ### Entry detail
 
@@ -99,7 +110,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
 
 - The seed now exists for previews (and the switch). `SampleData.seed(into:)` has a `precondition` that the container is in-memory with CloudKit disabled. Sample data must never reach the persistent container
-- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I4: photo add and remove, location, Move to Trash, Delete Permanently, Trash actions, Settings retention, dictation (the button only toggles its visual state), and search
+- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I5: location, Move to Trash, Delete Permanently, Trash actions, Settings retention, dictation (the button only toggles its visual state), search, and the photo viewer's Share button
 - Seed dates are fixed (September–October 2026) around `SampleData.now`, which previews pass as `referenceDate`
 - Seed photos are generated at seed time (`PlaceholderImage`); no image files are bundled or downloaded
 
@@ -141,7 +152,7 @@ Once the schema is deployed to the CloudKit production environment, only additiv
 
 ### Soft delete
 
-- User-facing deletes set `deletedAt`; they never call `modelContext.delete`
+- User-facing deletes set `deletedAt`; they never call `modelContext.delete`. The one exception is removing a photo from an entry (see Photos)
 - `modelContext.delete` is only for permanent delete and purge. Cascade rules fire only then
 - Every user-facing query filters `deletedAt == nil`
 

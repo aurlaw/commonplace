@@ -168,11 +168,10 @@ struct EntryDraftTests {
         #expect(!draft.isDirty(comparedTo: original))
     }
 
-    @Test func dictationAndPhotosNeverMakeADraftDirty() {
+    @Test func dictationNeverMakesADraftDirty() {
         let original = newDraft(in: topic("Sedona trip"))
         var draft = original
         draft.dictation = .sample
-        draft.photos = [Photo()]
 
         #expect(!draft.isDirty(comparedTo: original))
     }

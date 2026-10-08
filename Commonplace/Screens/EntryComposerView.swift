@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftData
 import SwiftUI
 
@@ -18,12 +19,41 @@ enum ComposerMode: Identifiable {
     }
 }
 
+/// A photo in the composer. Newly picked photos stay values until Save, so Cancel or a failed
+/// save can't leave orphaned `Photo` records.
+enum DraftPhoto: Identifiable {
+    /// Already saved on the entry.
+    case existing(Photo)
+    /// Picked and processed, not yet inserted.
+    case new(id: UUID, image: Data, thumbnail: Data)
+
+    enum ID: Hashable {
+        case existing(PersistentIdentifier)
+        case new(UUID)
+    }
+
+    var id: ID {
+        switch self {
+        case .existing(let photo): .existing(photo.persistentModelID)
+        case .new(let id, _, _): .new(id)
+        }
+    }
+
+    var thumbnailData: Data? {
+        switch self {
+        case .existing(let photo): photo.thumbnailData
+        case .new(_, _, let thumbnail): thumbnail
+        }
+    }
+}
+
 /// The composer's working copy, written to the store only on Save.
 struct EntryDraft {
     var topic: Topic?
     var date: Date
     var body = ""
-    var photos: [Photo] = []
+    /// In display order. Add with `addPhoto(_:)`, which enforces the per-entry limit.
+    var photos: [DraftPhoto] = []
     var dictation = Dictation.idle
 
     enum Dictation: Equatable {
@@ -49,7 +79,7 @@ struct EntryDraft {
             topic = entry.topic
             date = entry.date
             body = entry.body
-            photos = entry.sortedPhotos
+            photos = entry.sortedPhotos.map(DraftPhoto.existing)
         }
     }
 
@@ -59,17 +89,39 @@ struct EntryDraft {
         body.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// An entry needs a topic and some text.
+    /// An entry needs a topic, and text or at least one photo.
     var isValid: Bool {
-        topic != nil && !trimmedBody.isEmpty
+        topic != nil && (!trimmedBody.isEmpty || !photos.isEmpty)
+    }
+
+    /// How many more photos this entry can take.
+    var remainingPhotoSlots: Int {
+        max(0, PhotoLimits.maxPhotosPerEntry - photos.count)
+    }
+
+    /// Appends a processed photo, unless the entry is already at the limit.
+    ///
+    /// - Returns: Whether the photo was added.
+    @discardableResult
+    mutating func addPhoto(_ processed: ProcessedImage) -> Bool {
+        guard remainingPhotoSlots > 0 else {
+            return false
+        }
+        photos.append(.new(id: UUID(), image: processed.image, thumbnail: processed.thumbnail))
+        return true
+    }
+
+    mutating func removePhoto(_ id: DraftPhoto.ID) {
+        photos.removeAll { $0.id == id }
     }
 
     /// Whether saving would store something different from `original`.
     ///
-    /// Compares the trimmed body, the date, and the topic. Dictation state and photos never
-    /// make a draft dirty.
+    /// Compares the trimmed body, the date, the topic, and which photos are present (added or
+    /// removed). Dictation state never makes a draft dirty.
     func isDirty(comparedTo original: EntryDraft) -> Bool {
         trimmedBody != original.trimmedBody || date != original.date || topic !== original.topic
+            || photos.map(\.id) != original.photos.map(\.id)
     }
 
     /// A new, uninserted entry with the topic, date, and trimmed body.
@@ -82,6 +134,45 @@ struct EntryDraft {
         entry.date = date
         entry.body = trimmedBody
     }
+
+    /// Makes the entry's photos match the draft. Call before saving, for new and edited
+    /// entries alike.
+    ///
+    /// - Existing photos no longer in the draft are **hard deleted**: removing a photo is the
+    ///   one user-facing delete that skips Trash.
+    /// - New photos are inserted.
+    /// - `order` is rewritten 0…n-1 to match the draft.
+    ///
+    /// Touches nothing else on the entry.
+    func applyPhotos(to entry: Entry, in context: ModelContext) {
+        let kept = Set(photos.map(\.id))
+        for photo in entry.photos ?? [] where !kept.contains(.existing(photo.persistentModelID)) {
+            context.delete(photo)
+        }
+        for (order, draftPhoto) in photos.enumerated() {
+            switch draftPhoto {
+            case .existing(let photo):
+                if photo.order != order {
+                    photo.order = order
+                }
+            case .new(_, let image, let thumbnail):
+                context.insert(
+                    Photo(imageData: image, thumbnailData: thumbnail, order: order, entry: entry)
+                )
+            }
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// Downscales and thumbnails picked photos. Replaced with a fake in tests.
+    @Entry var imageProcessor: any ImageProcessor = ImageIOProcessor()
+}
+
+/// One trip to the photo library: the items picked, processed in pick order.
+private struct PhotoBatch {
+    let id = UUID()
+    let items: [PhotosPickerItem]
 }
 
 /// New / Edit Entry sheet. Save inserts a new entry or writes back to the edited one.
@@ -94,6 +185,7 @@ struct EntryComposerView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.imageProcessor) private var imageProcessor
     /// A per-device preference, not synced. See `LastUsedTopic`.
     @AppStorage(LastUsedTopic.storageKey) private var lastUsedTopic: Data?
     @State private var draft: EntryDraft
@@ -102,6 +194,12 @@ struct EntryComposerView: View {
     @State private var isPickingDate = false
     @State private var isConfirmingDiscard = false
     @State private var saveError: String?
+    @State private var pickerSelection: [PhotosPickerItem] = []
+    /// The batch being processed. Tied to the sheet, so dismissing it cancels the work.
+    @State private var photoBatch: PhotoBatch?
+    /// Picked photos not yet processed; each shows a placeholder tile.
+    @State private var pendingPhotoCount = 0
+    @State private var photoMessage: String?
     @FocusState private var isBodyFocused: Bool
 
     /// - Parameter draft: Overrides the draft derived from `mode`; previews use it to show a
@@ -148,13 +246,26 @@ struct EntryComposerView: View {
                         save()
                     }
                     .buttonStyle(.glassProminent)
-                    .disabled(!draft.isValid)
+                    .disabled(!draft.isValid || isProcessingPhotos)
                 }
             }
         }
         // With unsaved changes, swipe-down is blocked so Cancel's confirmation is the way out.
-        .interactiveDismissDisabled(isDirty)
+        .interactiveDismissDisabled(isDirty || isProcessingPhotos)
         .saveErrorAlert($saveError)
+        .onChange(of: pickerSelection) { _, items in
+            guard !items.isEmpty else {
+                return
+            }
+            // Cleared so the next trip to the library starts fresh.
+            pickerSelection = []
+            pendingPhotoCount = items.count
+            photoMessage = nil
+            photoBatch = PhotoBatch(items: items)
+        }
+        .task(id: photoBatch?.id) {
+            await processPhotoBatch()
+        }
         .onAppear {
             if isFromList, draft.topic == nil {
                 // The default topic is where the sheet starts, not a change to it.
@@ -170,12 +281,55 @@ struct EntryComposerView: View {
         draft.isDirty(comparedTo: original)
     }
 
+    private var isProcessingPhotos: Bool {
+        pendingPhotoCount > 0
+    }
+
+    /// Loads and processes the picked photos one at a time, in pick order, so tiles fill in
+    /// left to right and only one full-size image is in memory at once. A photo that can't be
+    /// loaded or decoded is dropped; the rest still succeed.
+    private func processPhotoBatch() async {
+        guard let batch = photoBatch else {
+            return
+        }
+        var failures = 0
+        for item in batch.items {
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    throw ImageProcessingError.undecodable
+                }
+                let processed = try await imageProcessor.process(data)
+                // The sheet was dismissed: discard the result.
+                try Task.checkCancellation()
+                if !draft.addPhoto(processed) {
+                    failures += 1
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                failures += 1
+            }
+            pendingPhotoCount -= 1
+        }
+        pendingPhotoCount = 0
+        if failures > 0 {
+            let message =
+                failures == 1
+                ? "1 photo couldn’t be added" : "\(failures) photos couldn’t be added"
+            photoMessage = message
+            AccessibilityNotification.Announcement(message).post()
+        }
+    }
+
     /// Dismisses on success. On failure the sheet stays open with the draft intact.
     private func save() {
         if case .edit(let entry) = mode {
             draft.apply(to: entry)
+            draft.applyPhotos(to: entry, in: modelContext)
         } else {
-            modelContext.insert(draft.makeEntry())
+            let entry = draft.makeEntry()
+            modelContext.insert(entry)
+            draft.applyPhotos(to: entry, in: modelContext)
         }
         saveError = modelContext.saveOrRollback()
         guard saveError == nil else {
@@ -310,42 +464,72 @@ struct EntryComposerView: View {
     // MARK: Photos
 
     private var photoRow: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                // Inert in the shell: I5 opens the photo library.
-                Button {
-                } label: {
-                    VStack(spacing: 3) {
-                        Image(systemName: "photo.on.rectangle")
-                            .font(.title3)
-                        Text("Add Photos")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 72, height: 64)
-                    .background(.fill.tertiary, in: .rect(cornerRadius: 14))
-                }
-                .buttonStyle(.plain)
-                ForEach(draft.photos) { photo in
-                    PhotoImage(data: photo.thumbnailData, cornerRadius: 14)
-                        .frame(width: 64, height: 64)
-                        .overlay(alignment: .topTrailing) {
-                            // Inert in the shell: removal is applied on save in I5.
-                            Button("Remove photo", systemImage: "xmark.circle.fill") {}
+        VStack(alignment: .leading, spacing: 0) {
+            if let photoMessage {
+                Text(photoMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+            }
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    addPhotosButton
+                    ForEach(draft.photos) { photo in
+                        PhotoImage(data: photo.thumbnailData, cornerRadius: 14)
+                            .frame(width: 64, height: 64)
+                            .overlay(alignment: .topTrailing) {
+                                // Removed from the draft only: the store changes on Save.
+                                Button("Remove photo", systemImage: "xmark.circle.fill") {
+                                    draft.removePhoto(photo.id)
+                                }
                                 .labelStyle(.iconOnly)
                                 .font(.title3)
                                 .symbolRenderingMode(.palette)
                                 .foregroundStyle(.white, .black.opacity(0.8))
                                 .buttonStyle(.plain)
                                 .offset(x: 6, y: -6)
-                        }
+                            }
+                    }
+                    ForEach(0..<pendingPhotoCount, id: \.self) { _ in
+                        ProgressView()
+                            .frame(width: 64, height: 64)
+                            .background(.fill.tertiary, in: .rect(cornerRadius: 14))
+                            .accessibilityLabel("Adding photo")
+                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                .padding(.bottom, 12)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 12)
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
+    }
+
+    /// Opens the photo library. Library only: there is no camera option.
+    private var addPhotosButton: some View {
+        PhotosPicker(
+            selection: $pickerSelection,
+            maxSelectionCount: draft.remainingPhotoSlots - pendingPhotoCount,
+            selectionBehavior: .ordered,
+            matching: .images,
+            // Asks Photos for a converted copy, so RAW and other formats ImageIO can't
+            // downsample arrive as something it can.
+            preferredItemEncoding: .compatible
+        ) {
+            VStack(spacing: 3) {
+                Image(systemName: "photo.on.rectangle")
+                    .font(.title3)
+                Text("Add Photos")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 72, height: 64)
+            .background(.fill.tertiary, in: .rect(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        // One batch at a time, and never past the per-entry limit.
+        .disabled(isProcessingPhotos || draft.remainingPhotoSlots == 0)
     }
 }
 
@@ -470,7 +654,7 @@ private struct ComposerPreview: View {
         draft.body =
             "Back at the car. Cathedral Rock took about ninety minutes up and down. The last "
             + "scramble is steeper than it looks from the lot, "
-        draft.photos = Array(entry.sortedPhotos.prefix(2))
+        draft.photos = entry.sortedPhotos.prefix(2).map(DraftPhoto.existing)
         draft.dictation = .sample
         return draft
     }
