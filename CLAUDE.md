@@ -83,12 +83,23 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - Duplicate topic titles are allowed
 - Archived topics stay fully usable; archiving only moves them to the Archived section
 
+### Entry detail
+
+- **Entry detail is a reader for the whole topic, and paging happens in place.** The navigation stack keeps the `Entry` that was tapped; swiping or tapping a neighbor changes which entry is shown (`current`) without pushing. Back and the topic chip always return to the topic
+- The toolbar, the ••• menu (Edit, and Move to Trash / Delete Permanently when wired), the neighbor bar, and the photo viewer all act on `current`, never on the tapped `entry`
+- **Reading order** is `EntryTimeline.readingOrder`: oldest → newest by `date`, ties by `createdAt`, over the topic's `liveEntries`. Older is on the left. `neighbors(of:in:)` is built on it, and it is the reverse of the timeline's order. No wrap-around
+- Pages are a horizontal `ScrollView` + `LazyHStack` with `.scrollTargetBehavior(.paging)` and a `ScrollPosition` created with `idType: PersistentIdentifier.self`
+- **Only a scroll moves the reader.** `current` is updated from the scroll position while a scroll is in progress or settles. When the entry list changes underneath (a re-dated edit, an import, a trashed entry), `keepPlace()` scrolls back to `current` without animation; if `current` is no longer live it moves to `EntryTimeline.replacement(for:in:)` (newer neighbor, else older), or pops to the topic when none remain
+- Neighbor buttons are the accessible way to page; a page change posts an accessibility announcement of the position ("3 of 6"), and the animated scroll is skipped with Reduce Motion
+- The topic chip uses `dismiss()`, which is right only while entry detail is pushed from a topic. Search results (I9) will push it from the topics list and must decide how the chip behaves there
+- **Back gesture vs. paging — not yet verified on a device.** iOS 26 added a content-area back swipe in navigation stacks, which can compete with horizontal paging. Required: a mid-topic horizontal swipe pages, and the leading-edge back gesture still pops. Only supported SwiftUI APIs are used and the system back gesture is not disabled. Record the observed behavior here once checked
+
 ### Shell mode — off
 
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
 
 - The seed now exists for previews (and the switch). `SampleData.seed(into:)` has a `precondition` that the container is in-memory with CloudKit disabled. Sample data must never reach the persistent container
-- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I3: photo add and remove, location, Move to Trash, Delete Permanently, Trash actions, Settings retention, dictation (the button only toggles its visual state), search, and entry paging
+- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I4: photo add and remove, location, Move to Trash, Delete Permanently, Trash actions, Settings retention, dictation (the button only toggles its visual state), and search
 - Seed dates are fixed (September–October 2026) around `SampleData.now`, which previews pass as `referenceDate`
 - Seed photos are generated at seed time (`PlaceholderImage`); no image files are bundled or downloaded
 

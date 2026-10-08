@@ -43,9 +43,14 @@ nonisolated enum EntryTimeline {
         return sections
     }
 
-    /// The entries either side of `entry` by `date`, or `nil` when it isn't in `entries`.
+    /// Oldest first by `date`, ties broken by `createdAt`: the order entry detail pages in.
+    static func readingOrder(_ entries: [Entry]) -> [Entry] {
+        entries.sorted(by: isOlder)
+    }
+
+    /// The entries either side of `entry` in reading order, or `nil` when it isn't in `entries`.
     static func neighbors(of entry: Entry, in entries: [Entry]) -> Neighbors? {
-        let ordered = Array(entries.sorted(by: isNewer).reversed())
+        let ordered = readingOrder(entries)
         guard let index = ordered.firstIndex(where: { $0 === entry }) else {
             return nil
         }
@@ -55,6 +60,22 @@ nonisolated enum EntryTimeline {
             position: index + 1,
             count: ordered.count
         )
+    }
+
+    /// The entry to show when `entry` can no longer be shown (it was trashed): its newer
+    /// neighbor in reading order, else its older one, else `nil` when no other entry remains.
+    ///
+    /// Works whether or not `entry` is still in `entries`.
+    static func replacement(for entry: Entry, in entries: [Entry]) -> Entry? {
+        let others = readingOrder(entries.filter { $0 !== entry })
+        return others.first { isOlder(entry, $0) } ?? others.last
+    }
+
+    private static func isOlder(_ lhs: Entry, _ rhs: Entry) -> Bool {
+        if lhs.date != rhs.date {
+            return lhs.date < rhs.date
+        }
+        return lhs.createdAt < rhs.createdAt
     }
 
     private static func isNewer(_ lhs: Entry, _ rhs: Entry) -> Bool {

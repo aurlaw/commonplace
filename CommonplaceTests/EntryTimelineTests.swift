@@ -118,6 +118,110 @@ struct EntryTimelineTests {
         #expect(EntryTimeline.neighbors(of: outside, in: [inside]) == nil)
     }
 
+    // MARK: readingOrder
+
+    @Test func readingOrderIsOldestToNewest() {
+        let entries = [
+            entry("oct-3", at: date(2026, 10, 3, 8, 50)),
+            entry("sep-30", at: date(2026, 9, 30, 16, 40)),
+            entry("oct-2", at: date(2026, 10, 2, 6, 10)),
+            entry("dec-2025", at: date(2025, 12, 31, 23, 59)),
+        ]
+
+        #expect(
+            EntryTimeline.readingOrder(entries).map(\.body)
+                == ["dec-2025", "sep-30", "oct-2", "oct-3"]
+        )
+    }
+
+    @Test func readingOrderBreaksTiesByCreatedAt() {
+        let moment = date(2026, 10, 2, 6, 10)
+        let second = entry("second", at: moment, createdAt: date(2026, 10, 2, 9, 0))
+        let third = entry("third", at: moment, createdAt: date(2026, 10, 2, 10, 0))
+        let first = entry("first", at: moment, createdAt: date(2026, 10, 2, 8, 0))
+
+        #expect(
+            EntryTimeline.readingOrder([second, third, first]).map(\.body)
+                == ["first", "second", "third"]
+        )
+    }
+
+    @Test func readingOrderOfEmptyAndSingleInputs() {
+        let only = entry("only", at: date(2026, 10, 2, 6, 10))
+
+        #expect(EntryTimeline.readingOrder([]).isEmpty)
+        #expect(EntryTimeline.readingOrder([only]).map(\.body) == ["only"])
+    }
+
+    @Test func neighborsAgreeWithReadingOrder() throws {
+        let moment = date(2026, 10, 2, 6, 10)
+        let entries = [
+            entry("c", at: date(2026, 10, 3, 8, 50)),
+            entry("b-later", at: moment, createdAt: date(2026, 10, 2, 9, 0)),
+            entry("a", at: date(2026, 9, 30, 16, 40)),
+            entry("b-earlier", at: moment, createdAt: date(2026, 10, 2, 8, 0)),
+        ]
+        let ordered = EntryTimeline.readingOrder(entries)
+
+        for (index, entry) in ordered.enumerated() {
+            let neighbors = try #require(EntryTimeline.neighbors(of: entry, in: entries))
+            #expect(neighbors.position == index + 1)
+            #expect(neighbors.count == ordered.count)
+            #expect(neighbors.previous === (index > 0 ? ordered[index - 1] : nil))
+            #expect(neighbors.next === (index < ordered.count - 1 ? ordered[index + 1] : nil))
+        }
+    }
+
+    @Test func readingOrderIsTheReverseOfTheTimeline() {
+        let entries = [
+            entry("oct-3", at: date(2026, 10, 3, 8, 50)),
+            entry("sep-30", at: date(2026, 9, 30, 16, 40)),
+            entry("oct-2", at: date(2026, 10, 2, 6, 10)),
+        ]
+        let timeline = EntryTimeline.groupByMonth(entries, calendar: calendar).flatMap(\.entries)
+
+        #expect(EntryTimeline.readingOrder(entries).map(\.body) == timeline.reversed().map(\.body))
+    }
+
+    // MARK: replacement
+
+    @Test func replacementForAMiddleEntryIsItsNewerNeighbor() {
+        let older = entry("older", at: date(2026, 10, 1, 15, 15))
+        let middle = entry("middle", at: date(2026, 10, 2, 6, 10))
+        let newer = entry("newer", at: date(2026, 10, 3, 8, 50))
+        let newest = entry("newest", at: date(2026, 10, 4, 5, 58))
+        let entries = [newest, older, middle, newer]
+
+        #expect(EntryTimeline.replacement(for: middle, in: entries) === newer)
+        #expect(EntryTimeline.replacement(for: older, in: entries) === middle)
+    }
+
+    @Test func replacementForTheNewestEntryIsItsOlderNeighbor() {
+        let older = entry("older", at: date(2026, 10, 1, 15, 15))
+        let middle = entry("middle", at: date(2026, 10, 2, 6, 10))
+        let newest = entry("newest", at: date(2026, 10, 3, 8, 50))
+
+        #expect(EntryTimeline.replacement(for: newest, in: [older, newest, middle]) === middle)
+    }
+
+    @Test func replacementForTheOnlyEntryIsNil() {
+        let only = entry("only", at: date(2026, 10, 2, 6, 10))
+
+        #expect(EntryTimeline.replacement(for: only, in: [only]) == nil)
+        #expect(EntryTimeline.replacement(for: only, in: []) == nil)
+    }
+
+    /// Once an entry is trashed it is no longer among the topic's live entries.
+    @Test func replacementWorksWhenTheEntryHasAlreadyLeftTheList() {
+        let older = entry("older", at: date(2026, 10, 1, 15, 15))
+        let trashed = entry("trashed", at: date(2026, 10, 2, 6, 10))
+        let newer = entry("newer", at: date(2026, 10, 3, 8, 50))
+
+        #expect(EntryTimeline.replacement(for: trashed, in: [older, newer]) === newer)
+        #expect(EntryTimeline.replacement(for: trashed, in: [older]) === older)
+        #expect(EntryTimeline.replacement(for: newer, in: [older]) === older)
+    }
+
     // MARK: Other labels
 
     @Test func dateLabels() {
@@ -159,8 +263,8 @@ struct EntryTimelineTests {
         return calendar.date(from: components) ?? .distantPast
     }
 
-    private func entry(_ body: String, at date: Date) -> Entry {
-        let entry = Entry(body: body, date: date)
+    private func entry(_ body: String, at date: Date, createdAt: Date = .now) -> Entry {
+        let entry = Entry(body: body, date: date, createdAt: createdAt)
         context.insert(entry)
         return entry
     }
