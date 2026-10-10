@@ -50,7 +50,7 @@ final class LocationCapture {
     /// - Returns: Whether the coordinates were written.
     @discardableResult
     func attach(_ coordinate: Coordinate, to entryID: PersistentIdentifier) -> Bool {
-        guard let entry = entry(entryID), !entry.isTrashed, !entry.hasLocation else {
+        guard let entry = entry(entryID), entry.isLive, !entry.hasLocation else {
             return false
         }
         entry.latitude = coordinate.latitude
@@ -100,10 +100,7 @@ final class LocationCapture {
     /// Whether an entry is waiting for a place name: live, in a live topic, with both
     /// coordinates and no name.
     static func needsPlaceName(_ entry: Entry) -> Bool {
-        guard !entry.isTrashed, entry.hasLocation, entry.placeName == nil else {
-            return false
-        }
-        return !(entry.topic?.isTrashed ?? false)
+        entry.isLive && entry.hasLocation && entry.placeName == nil
     }
 
     /// The store-side part of `needsPlaceName`, newest first: entries with a latitude and no

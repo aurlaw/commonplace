@@ -5,6 +5,13 @@ struct EntryRow: View {
     let entry: Entry
 
     var body: some View {
+        // A row can outlive its entry for a moment after a permanent delete.
+        if entry.isAvailable {
+            content
+        }
+    }
+
+    private var content: some View {
         HStack(alignment: .top, spacing: 14) {
             VStack(spacing: 0) {
                 Text(EntryTimeline.dayNumber(entry.date))

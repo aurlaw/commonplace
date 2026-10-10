@@ -9,7 +9,7 @@ Phase briefs live in the Tech Obsidian vault under `commonplace/phases/`.
 - `Commonplace.xcodeproj` — Xcode project. **Never edit it** (including `project.pbxproj`)
 - `Commonplace/` — app sources
   - `Models/` — `SchemaV1` models and `TopicColor` (Foundation only, no SwiftUI)
-  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, and `LocationCapture`
+  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, and `TrashOperations` (with `TrashRetention`)
   - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`) and the pure `EntryTimeline` helpers
   - `Screens/` — one file per screen or sheet; `RootView` owns the navigation stack
   - `SampleData/` — the seed, placeholder images, `PreviewContainer`, and `FakeLocationService`
@@ -91,7 +91,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - **`ImageProcessor`** (protocol, injected through the `imageProcessor` environment value; `ImageIOProcessor` is the real one) turns picked data into a `ProcessedImage`. It downsamples with ImageIO, bakes in EXIF orientation, never upscales, and drops all metadata including GPS. When `CGImageSourceCreateThumbnailAtIndex` fails (seen on a device with imported, TIFF-based RAW photos, which ImageIO could neither thumbnail nor decode), `ImageDownsampler` falls back in order to: Core Image's RAW pipeline (`CIRAWFilter`), the largest image in the file ImageIO can decode, and last the file's embedded preview, which may be small. The fallbacks use much more memory than the fast path. `process` is `@concurrent`, so it runs off the main actor; picked photos are processed one at a time, in pick order
 - **`DraftPhoto`** is what the composer holds: `.existing(Photo)` for saved photos and `.new(id:image:thumbnail:)` for picked ones. New photos are values, not inserted models, until Save, so Cancel or a failed save can't leave orphaned `Photo` records
 - `EntryDraft.applyPhotos(to:in:)` makes the entry's photos match the draft for new and edited entries alike: it inserts new photos, deletes dropped ones, and rewrites `order` 0…n-1. It touches nothing else on the entry. Adding or removing a photo makes the draft dirty
-- **Photo hard-delete exception:** removing a photo in the composer calls `modelContext.delete(photo)` on Save, with no Trash and no confirmation. This is the one user-facing delete outside permanent delete and purge. Cancel discards the removal
+- **Photo hard-delete exception:** removing a photo in the composer calls `modelContext.delete(photo)` on Save, with no Trash and no confirmation. This is the one delete outside `TrashOperations`. Cancel discards the removal
 - **Never show a full-size bitmap in a grid or strip.** Small tiles and strips use `thumbnailData` through `PhotoImage`. Anything larger uses `DownsampledPhotoImage`, which decodes `imageData` off the main actor at a stated pixel size and shows the thumbnail until it is ready (and whenever `imageData` is still `nil` after a sync). The viewer keeps a full-size bitmap for the visible page only
 
 ### Location
@@ -114,7 +114,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - The toolbar, the ••• menu (Edit, and Move to Trash / Delete Permanently when wired), the neighbor bar, and the photo viewer all act on `current`, never on the tapped `entry`
 - **Reading order** is `EntryTimeline.readingOrder`: oldest → newest by `date`, ties by `createdAt`, over the topic's `liveEntries`. Older is on the left. `neighbors(of:in:)` is built on it, and it is the reverse of the timeline's order. No wrap-around
 - Pages are a horizontal `ScrollView` + `LazyHStack` with `.scrollTargetBehavior(.paging)` and a `ScrollPosition` created with `idType: PersistentIdentifier.self`
-- **Only a scroll moves the reader.** `current` is updated from the scroll position while a scroll is in progress or settles. When the entry list changes underneath (a re-dated edit, an import, a trashed entry), `keepPlace()` scrolls back to `current` without animation; if `current` is no longer live it moves to `EntryTimeline.replacement(for:in:)` (newer neighbor, else older), or pops to the topic when none remain
+- **Only a scroll moves the reader.** `current` is updated from the scroll position while a scroll is in progress or settles. When the entry list changes underneath (a re-dated edit, an import, a trashed entry), `keepPlace()` scrolls back to `current` without animation; if `current` is no longer live it moves to `EntryTimeline.replacement(for:in:)` (newer neighbor, else older), or pops to the topic when none remain. Trashing or deleting the current entry from the ••• menu takes the same path
 - Neighbor buttons are the accessible way to page; a page change posts an accessibility announcement of the position ("3 of 6"), and the animated scroll is skipped with Reduce Motion
 - The topic chip uses `dismiss()`, which is right only while entry detail is pushed from a topic. Search results (I9) will push it from the topics list and must decide how the chip behaves there
 - **Back gesture vs. paging — not yet verified on a device.** iOS 26 added a content-area back swipe in navigation stacks, which can compete with horizontal paging. Required: a mid-topic horizontal swipe pages, and the leading-edge back gesture still pops. Only supported SwiftUI APIs are used and the system back gesture is not disabled. Record the observed behavior here once checked
@@ -124,7 +124,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
 
 - The seed now exists for previews (and the switch). `SampleData.seed(into:)` has a `precondition` that the container is in-memory with CloudKit disabled. Sample data must never reach the persistent container
-- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I6: Move to Trash, Delete Permanently, Trash actions, Settings retention, dictation (the button only toggles its visual state), search, and the photo viewer's Share button
+- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I7: dictation (the button only toggles its visual state), search, and the photo viewer's Share button
 - Seed dates are fixed (September–October 2026) around `SampleData.now`, which previews pass as `referenceDate`
 - Seed photos are generated at seed time (`PlaceholderImage`); no image files are bundled or downloaded
 
@@ -164,11 +164,19 @@ Once the schema is deployed to the CloudKit production environment, only additiv
 
 `SchemaV1` is a `VersionedSchema`, but **no `SchemaMigrationPlan` is created or passed to `ModelContainer`**. With one schema version there is nothing to migrate, and there are reports of `ModelContainer` failing to load when CloudKit is enabled and a migration plan is passed. Do not add a plan reflexively. Add one only if a `SchemaV2` needs it, and verify against the then-current SwiftData behavior first.
 
-### Soft delete
+### Soft delete and Trash
 
-- User-facing deletes set `deletedAt`; they never call `modelContext.delete`. The one exception is removing a photo from an entry (see Photos)
-- `modelContext.delete` is only for permanent delete and purge. Cascade rules fire only then
-- Every user-facing query filters `deletedAt == nil`
+- **Move to Trash is the default delete everywhere**: it sets `deletedAt`, needs no confirmation, and syncs like any edit. There is no undo toast; Trash is the undo
+- **All of it goes through `TrashOperations`** (`Persistence/TrashOperations.swift`): `moveToTrash`, `restore`, `deletePermanently`, `emptyTrash`, `purge(retention:)`, and the counts used in confirmation copy. Each operation ends in `saveOrRollback()` and returns the error message for `.saveErrorAlert(_:)`
+- **`modelContext.delete` is called only in `TrashOperations`** (permanent delete, Empty Trash, purge) and in `EntryDraft.applyPhotos` (removing a photo from an entry; see Photos). Nowhere else. Cascades (topic → entries → photos) fire only then
+- **Every permanent delete is confirmed** with accurate counts. A topic's count is every entry the delete removes, including ones already in Trash (`TrashOperations.entriesDeleted(with:)`). Entries share one alert, `.deleteEntryAlert(_:delete:)`
+- **Trashing a topic stamps only the topic.** Its entries keep their own `deletedAt`. Restoring the topic brings back the entries that were live, not ones trashed individually, and keeps its archived state
+- **Restoring an entry whose topic is in Trash restores the topic too**, after a confirmation that names it ("Restore Both"). `TrashOperations.restore(_ entry:)` does both; the view asks first
+- **Live means live all the way up.** An entry is shown outside Trash only if it isn't trashed and its topic isn't trashed: `Entry.isLive`. `Topic.liveEntries` is the narrower "not individually trashed" list a topic shows and brings back when restored. Topic lists query `deletedAt == nil`. **Search must filter with `Entry.isLive`**
+- **Retention** (`TrashRetention`: 30 days by default, 90 days, or Never) is a per-device preference in `@AppStorage(TrashRetention.storageKey)`, not synced, so in practice the shortest setting among devices wins. Shortening it asks first when that would delete items now
+- **Auto-purge** runs from `RootView` when the app becomes active, at most once a day (`TrashRetention.lastPurgeKey`), and deletes items trashed at or before `cutoff(before:)`. Failures are logged, not shown
+- **The clock is injected:** `TrashOperations.now` is a closure, replaced in tests to control time
+- **After a permanent delete, a view can outlive its model for a moment, and reading a deleted model's properties traps.** Screens and rows that take a model check `isAvailable` first (`TopicDetailView`, `EntryPage`, `EntryRow`), and entry detail works out the replacement entry before deleting the current one
 
 ## Containers
 

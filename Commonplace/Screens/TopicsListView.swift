@@ -89,8 +89,8 @@ struct TopicsListView: View {
         TopicListSections(topics: topics, sort: sort)
     }
 
-    /// A row with the leading swipe that archives or unarchives. The trailing swipe is left
-    /// free for Move to Trash.
+    /// A row with the leading swipe that archives or unarchives and the trailing swipe that
+    /// moves the topic to Trash, in both sections.
     private func topicLink(_ topic: Topic) -> some View {
         NavigationLink(value: topic) {
             TopicRow(topic: topic)
@@ -103,6 +103,14 @@ struct TopicsListView: View {
                 withAnimation {
                     topic.isArchived.toggle()
                     saveError = modelContext.saveOrRollback()
+                }
+            }
+        }
+        .swipeActions(edge: .trailing) {
+            // No confirmation: Trash is the undo.
+            Button("Move to Trash", systemImage: "trash", role: .destructive) {
+                withAnimation {
+                    saveError = TrashOperations(context: modelContext).moveToTrash(topic)
                 }
             }
         }

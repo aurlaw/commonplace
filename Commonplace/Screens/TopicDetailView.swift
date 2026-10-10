@@ -7,6 +7,9 @@ struct TopicDetailView: View {
 
     @Environment(\.referenceDate) private var referenceDate
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    /// An entry waiting for its Delete Permanently confirmation.
+    @State private var entryPendingDelete: Entry?
     @State private var composerMode: ComposerMode?
     @State private var topicEditorMode: TopicEditorMode?
     @State private var isConfirmingDelete: Bool
@@ -18,6 +21,13 @@ struct TopicDetailView: View {
     }
 
     var body: some View {
+        // The screen outlives its topic for a moment after a permanent delete.
+        if topic.isAvailable {
+            content
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 TopicHeader(topic: topic)
@@ -41,6 +51,22 @@ struct TopicDetailView: View {
                             EntryRow(entry: entry)
                         }
                         .buttonStyle(.plain)
+                        // The timeline isn't a List, so there is no swipe: a long press instead.
+                        .contextMenu {
+                            Button("Edit", systemImage: "pencil") {
+                                composerMode = .edit(entry)
+                            }
+                            Divider()
+                            Button("Move to Trash", systemImage: "trash") {
+                                saveError = trash.moveToTrash(entry)
+                            }
+                            Button(
+                                "Delete Permanently", systemImage: "trash.slash",
+                                role: .destructive
+                            ) {
+                                entryPendingDelete = entry
+                            }
+                        }
                         Divider()
                             .padding(.leading, 64)
                     }
@@ -70,11 +96,15 @@ struct TopicDetailView: View {
             TopicEditorView(mode: mode)
         }
         .alert(deleteTitle, isPresented: $isConfirmingDelete) {
-            // Inert in the shell: both buttons only dismiss.
-            Button("Delete", role: .destructive) {}
+            Button("Delete", role: .destructive) {
+                leave(after: trash.deletePermanently(topic))
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This can’t be undone.")
+        }
+        .deleteEntryAlert($entryPendingDelete) { entry in
+            saveError = trash.deletePermanently(entry)
         }
         .saveErrorAlert($saveError)
     }
@@ -83,8 +113,22 @@ struct TopicDetailView: View {
         EntryTimeline.groupByMonth(topic.liveEntries)
     }
 
+    private var trash: TrashOperations {
+        TrashOperations(context: modelContext)
+    }
+
+    /// Returns to the topics list once the topic is gone, or shows why it isn't.
+    private func leave(after error: String?) {
+        if let error {
+            saveError = error
+        } else {
+            dismiss()
+        }
+    }
+
+    /// Counts every entry the delete removes, including ones already in Trash.
     private var deleteTitle: String {
-        let count = EntryTimeline.entryCount(topic.liveEntries.count)
+        let count = EntryTimeline.entryCount(TrashOperations.entriesDeleted(with: topic))
         return "Delete “\(topic.title)” and its \(count)?"
     }
 
@@ -101,7 +145,9 @@ struct TopicDetailView: View {
                 topic.isArchived.toggle()
                 saveError = modelContext.saveOrRollback()
             }
-            Button("Move to Trash", systemImage: "trash") {}
+            Button("Move to Trash", systemImage: "trash") {
+                leave(after: trash.moveToTrash(topic))
+            }
             Button("Delete Permanently", systemImage: "trash.slash", role: .destructive) {
                 isConfirmingDelete = true
             }

@@ -1,7 +1,9 @@
 import Foundation
 
 extension Topic {
-    /// Entries that are not in Trash.
+    /// Entries that are not individually in Trash: what the topic shows, and what comes back
+    /// with it when it is restored. Whether the topic itself is trashed is a separate question
+    /// (see `Entry.isLive`).
     var liveEntries: [Entry] {
         (entries ?? []).filter { !$0.isTrashed }
     }
@@ -27,5 +29,13 @@ extension Topic {
             case .orderedSame: $0.createdAt < $1.createdAt
             }
         }
+    }
+}
+
+extension Entry {
+    /// Live all the way up: not in Trash, and not inside a trashed topic. Anything that shows
+    /// entries outside Trash must only show live ones.
+    var isLive: Bool {
+        !isTrashed && !(topic?.isTrashed ?? false)
     }
 }

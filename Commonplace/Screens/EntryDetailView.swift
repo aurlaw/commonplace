@@ -11,10 +11,17 @@ struct EntryDetailView: View {
     let entry: Entry
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.referenceDate) private var referenceDate
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The entry currently shown. The toolbar, Edit, and the photo viewer all act on it.
     @State private var current: Entry
+    /// Kept from the tapped entry, which may itself be deleted while the reader is open.
+    @State private var topic: Topic?
+    @State private var entryPendingDelete: Entry?
+    @State private var saveError: String?
+    /// Set once the reader has asked to close, so it doesn't ask twice.
+    @State private var isLeaving = false
     @State private var position: ScrollPosition
     @State private var isScrolling = false
     /// The bars' insets. The horizontal scroll view doesn't pass them down to its pages.
@@ -25,6 +32,7 @@ struct EntryDetailView: View {
     init(entry: Entry) {
         self.entry = entry
         _current = State(initialValue: entry)
+        _topic = State(initialValue: entry.topic)
         // Starting on the tapped entry as initial state means there is no scroll to animate.
         var position = ScrollPosition(idType: PersistentIdentifier.self)
         position.scrollTo(id: entry.persistentModelID)
@@ -79,7 +87,7 @@ struct EntryDetailView: View {
                 Button {
                     dismiss()
                 } label: {
-                    TopicChip(topic: entry.topic, dotSize: 9)
+                    TopicChip(topic: topic, dotSize: 9)
                         .font(.subheadline.weight(.semibold))
                 }
                 .buttonStyle(.glass)
@@ -93,6 +101,10 @@ struct EntryDetailView: View {
         .sheet(item: $composerMode) { mode in
             EntryComposerView(mode: mode, now: referenceDate ?? .now)
         }
+        .deleteEntryAlert($entryPendingDelete) { entry in
+            remove(entry, permanently: true)
+        }
+        .saveErrorAlert($saveError)
         .fullScreenCover(item: $viewerSelection) { selection in
             PhotoViewer(
                 photos: selection.entry.sortedPhotos,
@@ -105,7 +117,7 @@ struct EntryDetailView: View {
 
     /// The topic's live entries, oldest on the left and newest on the right.
     private var entries: [Entry] {
-        EntryTimeline.readingOrder(entry.topic?.liveEntries ?? [entry])
+        EntryTimeline.readingOrder(topic?.liveEntries ?? [current].filter(\.isAvailable))
     }
 
     private var neighbors: EntryTimeline.Neighbors? {
@@ -137,9 +149,16 @@ struct EntryDetailView: View {
     /// Called when the topic's entries change (an edit that re-dates, an import, a trashed
     /// entry). Stays on the current entry, or falls back when it is no longer live.
     private func keepPlace() {
+        guard !isLeaving else {
+            return
+        }
         if !entries.contains(where: { $0 === current }) {
-            guard let replacement = EntryTimeline.replacement(for: current, in: entries) else {
-                dismiss()
+            // A deleted entry can't be read, so there is no "nearest": take the newest.
+            let replacement =
+                current.isAvailable
+                ? EntryTimeline.replacement(for: current, in: entries) : entries.last
+            guard let replacement else {
+                leave()
                 return
             }
             current = replacement
@@ -149,6 +168,30 @@ struct EntryDetailView: View {
         withTransaction(transaction) {
             position.scrollTo(id: current.persistentModelID)
         }
+    }
+
+    /// Trashes or deletes an entry, then moves to its neighbor, or back to the topic when it
+    /// was the last one. The neighbor is worked out first, while the entry can still be read.
+    private func remove(_ entry: Entry, permanently: Bool) {
+        let replacement = EntryTimeline.replacement(for: entry, in: entries)
+        let trash = TrashOperations(context: modelContext)
+        let error = permanently ? trash.deletePermanently(entry) : trash.moveToTrash(entry)
+        if let error {
+            saveError = error
+        } else if let replacement {
+            current = replacement
+        } else {
+            leave()
+        }
+    }
+
+    /// Back to the topic, once.
+    private func leave() {
+        guard !isLeaving else {
+            return
+        }
+        isLeaving = true
+        dismiss()
     }
 
     // MARK: Toolbar
@@ -200,9 +243,12 @@ struct EntryDetailView: View {
                 composerMode = .edit(current)
             }
             Divider()
-            // Inert until I7; when wired, both act on `current`.
-            Button("Move to Trash", systemImage: "trash") {}
-            Button("Delete Permanently", systemImage: "trash.slash", role: .destructive) {}
+            Button("Move to Trash", systemImage: "trash") {
+                remove(current, permanently: false)
+            }
+            Button("Delete Permanently", systemImage: "trash.slash", role: .destructive) {
+                entryPendingDelete = current
+            }
         } label: {
             Label("More", systemImage: "ellipsis")
         }
@@ -217,6 +263,13 @@ private struct EntryPage: View {
     let onSelectPhoto: (Int) -> Void
 
     var body: some View {
+        // A page can outlive its entry for a moment after a permanent delete.
+        if entry.isAvailable {
+            content
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
