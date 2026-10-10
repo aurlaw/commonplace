@@ -122,6 +122,23 @@ struct SampleDataTests {
         #expect(labels.prefix(2) == ["Today", "Yesterday"])
     }
 
+    @Test func sedonaAndDollySodsCarryLocationsAndOtherTopicsDoNot() throws {
+        let sedona = try #require(topic("Sedona trip"))
+        #expect(sedona.capturesLocation)
+        #expect(sedona.liveEntries.allSatisfy { $0.hasLocation })
+        // One entry was "saved offline": coordinates with no place name.
+        #expect(sedona.liveEntries.filter { $0.placeName == nil }.count == 1)
+
+        let dollySods = try #require(topic("Dolly Sods"))
+        #expect(dollySods.liveEntries.filter { $0.hasLocation }.count == 2)
+
+        for title in ["Stoic practice", "Cigars", "App ideas", "Kitchen remodel"] {
+            let other = try #require(topic(title))
+            #expect(!other.capturesLocation)
+            #expect((other.entries ?? []).allSatisfy { !$0.hasLocation })
+        }
+    }
+
     private func topic(_ title: String) -> Topic? {
         try? context.fetch(FetchDescriptor<Topic>(predicate: #Predicate { $0.title == title }))
             .first

@@ -231,6 +231,9 @@ private struct EntryPage: View {
                 if !entry.sortedPhotos.isEmpty {
                     PhotoGrid(photos: entry.sortedPhotos, onSelect: onSelectPhoto)
                 }
+                if entry.hasLocation {
+                    EntryLocationView(entry: entry)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
@@ -260,10 +263,22 @@ private struct PhotoSelection: Identifiable {
         .preferredColorScheme(.dark)
 }
 
+#Preview("No location") {
+    EntryDetailPreview(topic: "Stoic practice", index: 4)
+}
+
+#Preview("No location · Dark") {
+    EntryDetailPreview(topic: "Stoic practice", index: 4)
+        .preferredColorScheme(.dark)
+}
+
 private struct EntryDetailPreview: View {
+    var topic = "Sedona trip"
+    var index = 2
+
     var body: some View {
         NavigationStack {
-            if let entry = PreviewContainer.entry(in: "Sedona trip", at: 2) {
+            if let entry = PreviewContainer.entry(in: topic, at: index) {
                 EntryDetailView(entry: entry)
             }
         }

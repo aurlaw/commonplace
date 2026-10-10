@@ -9,6 +9,8 @@ enum AppRoute: Hashable {
 
 /// The app's single navigation stack: Topics → Topic → Entry, plus Trash and Settings.
 struct RootView: View {
+    @Environment(\.locationCapture) private var locationCapture
+    @Environment(\.scenePhase) private var scenePhase
     @State private var path = NavigationPath()
 
     var body: some View {
@@ -26,6 +28,13 @@ struct RootView: View {
                     case .settings: SettingsView()
                     }
                 }
+        }
+        // On launch and each return to the foreground: name places that were saved offline.
+        // Geocoding needs no location permission, so nothing is asked for here.
+        .task(id: scenePhase) {
+            if scenePhase == .active {
+                await locationCapture?.backfillPlaceNames()
+            }
         }
     }
 }

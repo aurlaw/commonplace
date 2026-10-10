@@ -11,6 +11,9 @@ import SwiftUI
 @main
 struct CommonplaceApp: App {
     private let container: Result<ModelContainer, any Error>
+    private let locationService: any LocationService
+    /// `nil` in shell mode and under tests, where nothing should geocode or outlive a sheet.
+    private let locationCapture: LocationCapture?
 
     init() {
         container = Result {
@@ -23,6 +26,15 @@ struct CommonplaceApp: App {
             }
             return try ModelContainerFactory.makePersistent()
         }
+        let usesRealStore = !Self.isRunningTests && !AppConfig.usesSampleData
+        locationService = usesRealStore ? CoreLocationService() : FakeLocationService()
+        if usesRealStore, case .success(let container) = container {
+            locationCapture = LocationCapture(
+                service: locationService, context: container.mainContext
+            )
+        } else {
+            locationCapture = nil
+        }
     }
 
     var body: some Scene {
@@ -32,6 +44,8 @@ struct CommonplaceApp: App {
                 RootView()
                     .modelContainer(container)
                     .environment(\.referenceDate, Self.usesSampleData ? SampleData.now : nil)
+                    .environment(\.locationService, locationService)
+                    .environment(\.locationCapture, locationCapture)
             case .failure(let error):
                 ContainerErrorView(message: error.localizedDescription)
             }

@@ -32,6 +32,7 @@
 		45A8DF86307459180016EDC6 /* CommonplaceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CommonplaceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		45A8DF90307459180016EDC6 /* CommonplaceUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CommonplaceUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		45A8DFA630745AA50016EDC6 /* appicon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = appicon.icon; sourceTree = "<group>"; };
+		45E1F5ED307AAB8C00B63954 /* route-567a3a1d-0671-4ab5-a0cf-1fec9697efa6.gpx */ = {isa = PBXFileReference; lastKnownFileType = text.xml; name = "route-567a3a1d-0671-4ab5-a0cf-1fec9697efa6.gpx"; path = "../../../../../../Downloads/route-567a3a1d-0671-4ab5-a0cf-1fec9697efa6.gpx"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -93,6 +94,7 @@
 		45A8DF70307459170016EDC6 = {
 			isa = PBXGroup;
 			children = (
+				45E1F5ED307AAB8C00B63954 /* route-567a3a1d-0671-4ab5-a0cf-1fec9697efa6.gpx */,
 				45A8DF7B307459170016EDC6 /* Commonplace */,
 				45A8DF89307459180016EDC6 /* CommonplaceTests */,
 				45A8DF93307459180016EDC6 /* CommonplaceUITests */,
@@ -428,6 +430,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Commonplace/Info.plist;
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Commonplace records where you write an entry, for topics where you've turned location on. Locations stay in your private iCloud.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -467,6 +470,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Commonplace/Info.plist;
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Commonplace records where you write an entry, for topics where you've turned location on. Locations stay in your private iCloud.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

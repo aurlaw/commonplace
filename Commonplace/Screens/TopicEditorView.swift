@@ -18,11 +18,19 @@ struct TopicDraft: Equatable {
     var title = ""
     var summary = ""
     var color = TopicColor.defaultColor
+    /// Whether new entries in the topic capture location by default.
+    var capturesLocation = false
 
-    init(title: String = "", summary: String = "", color: TopicColor = .defaultColor) {
+    init(
+        title: String = "",
+        summary: String = "",
+        color: TopicColor = .defaultColor,
+        capturesLocation: Bool = false
+    ) {
         self.title = title
         self.summary = summary
         self.color = color
+        self.capturesLocation = capturesLocation
     }
 
     init(mode: TopicEditorMode) {
@@ -30,6 +38,7 @@ struct TopicDraft: Equatable {
             title = topic.title
             summary = topic.summary
             color = topic.color
+            capturesLocation = topic.capturesLocation
         }
     }
 
@@ -38,7 +47,8 @@ struct TopicDraft: Equatable {
         TopicDraft(
             title: title.trimmingCharacters(in: .whitespacesAndNewlines),
             summary: summary.trimmingCharacters(in: .whitespacesAndNewlines),
-            color: color
+            color: color,
+            capturesLocation: capturesLocation
         )
     }
 
@@ -55,7 +65,9 @@ struct TopicDraft: Equatable {
     /// A new, uninserted topic holding the trimmed values.
     func makeTopic() -> Topic {
         let values = trimmed
-        return Topic(title: values.title, summary: values.summary, color: values.color)
+        let topic = Topic(title: values.title, summary: values.summary, color: values.color)
+        topic.capturesLocation = values.capturesLocation
+        return topic
     }
 
     /// Writes the trimmed values to an existing topic.
@@ -64,6 +76,7 @@ struct TopicDraft: Equatable {
         topic.title = values.title
         topic.summary = values.summary
         topic.color = values.color
+        topic.capturesLocation = values.capturesLocation
     }
 }
 
@@ -103,6 +116,15 @@ struct TopicEditorView: View {
                 } header: {
                     Text("Color")
                         .textCase(nil)
+                }
+                Section {
+                    // Only a preference: permission is asked when an entry first needs it.
+                    Toggle("Capture location by default", isOn: $draft.capturesLocation)
+                } footer: {
+                    Text(
+                        "New entries in this topic will include where you wrote them. "
+                            + "You can turn it off for any entry."
+                    )
                 }
             }
             .navigationTitle(isEditing ? "Edit Topic" : "New Topic")

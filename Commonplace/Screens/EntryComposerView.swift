@@ -55,6 +55,31 @@ struct EntryDraft {
     /// In display order. Add with `addPhoto(_:)`, which enforces the per-entry limit.
     var photos: [DraftPhoto] = []
     var dictation = Dictation.idle
+    /// Whether this entry should carry a location. Starts from the topic's setting for a new
+    /// entry and from whether the entry has one for an edit. Change it with
+    /// `setCapturesLocation(_:)`.
+    private(set) var capturesLocation = false
+    /// Where the location stands. Change it through the `capture…` methods.
+    private(set) var location = LocationState.none
+    /// Whether the location choice was made by hand in this sheet, after which changing the
+    /// topic no longer changes it.
+    private(set) var hasToggledLocation = false
+    let isEditing: Bool
+    /// The location the entry was saved with, restored if a replacement can't be captured.
+    private let savedLocation: LocationState
+
+    enum LocationState: Equatable {
+        /// Nothing captured (yet).
+        case none
+        case locating
+        /// Captured in this sheet. The place name arrives after the coordinate, or not at all.
+        case captured(Coordinate, placeName: String?)
+        /// The edited entry's saved location, unchanged.
+        case existing(Coordinate, placeName: String?)
+        /// Location access is off for the app.
+        case denied
+        case failed
+    }
 
     enum Dictation: Equatable {
         case idle
@@ -72,14 +97,28 @@ struct EntryDraft {
         switch mode {
         case .newFromList:
             date = now
+            isEditing = false
+            savedLocation = .none
         case .newInTopic(let topic):
             self.topic = topic
             date = now
+            isEditing = false
+            savedLocation = .none
+            capturesLocation = topic.capturesLocation
         case .edit(let entry):
             topic = entry.topic
             date = entry.date
             body = entry.body
             photos = entry.sortedPhotos.map(DraftPhoto.existing)
+            isEditing = true
+            if entry.hasLocation, let latitude = entry.latitude, let longitude = entry.longitude {
+                let coordinate = Coordinate(latitude: latitude, longitude: longitude)
+                savedLocation = .existing(coordinate, placeName: entry.placeName)
+                capturesLocation = true
+            } else {
+                savedLocation = .none
+            }
+            location = savedLocation
         }
     }
 
@@ -117,11 +156,140 @@ struct EntryDraft {
 
     /// Whether saving would store something different from `original`.
     ///
-    /// Compares the trimmed body, the date, the topic, and which photos are present (added or
-    /// removed). Dictation state never makes a draft dirty.
+    /// Compares the trimmed body, the date, the topic, which photos are present (added or
+    /// removed), and the location choice. Dictation state never makes a draft dirty, and nor
+    /// does a location captured automatically for a new entry.
     func isDirty(comparedTo original: EntryDraft) -> Bool {
         trimmedBody != original.trimmedBody || date != original.date || topic !== original.topic
             || photos.map(\.id) != original.photos.map(\.id)
+            || capturesLocation != original.capturesLocation
+            || (isEditing && hasNewLocation)
+    }
+
+    // MARK: Location
+
+    /// Whether a capture should be started: location is wanted and there is none.
+    var needsCapture: Bool {
+        capturesLocation && location == .none
+    }
+
+    var isLocating: Bool {
+        location == .locating
+    }
+
+    /// Whether a location was captured in this sheet.
+    private var hasNewLocation: Bool {
+        if case .captured = location { true } else { false }
+    }
+
+    /// Changes the topic. The location choice follows the new topic's setting, unless it has
+    /// already been made by hand in this sheet.
+    mutating func setTopic(_ newTopic: Topic?) {
+        topic = newTopic
+        guard !isEditing, !hasToggledLocation else {
+            return
+        }
+        capturesLocation = newTopic?.capturesLocation ?? false
+        if !capturesLocation {
+            location = .none
+        }
+    }
+
+    /// The user's own choice to include or remove the location.
+    mutating func setCapturesLocation(_ isOn: Bool) {
+        hasToggledLocation = true
+        capturesLocation = isOn
+        if !isOn {
+            location = .none
+        } else if location == .denied || location == .failed {
+            // Turning it back on is a fresh attempt.
+            location = .none
+        }
+    }
+
+    /// Asks for a fresh fix: "Use Current Location" on an edit, or another try after a failure.
+    /// An edited entry's saved location is replaced only if the new fix arrives.
+    mutating func requestCurrentLocation() {
+        hasToggledLocation = true
+        capturesLocation = true
+        location = .none
+    }
+
+    mutating func captureStarted() {
+        if needsCapture {
+            location = .locating
+        }
+    }
+
+    /// Records a fix, if one is still being waited for.
+    mutating func captureSucceeded(_ coordinate: Coordinate) {
+        if isLocating {
+            location = .captured(coordinate, placeName: nil)
+        }
+    }
+
+    /// Adds the place name to the captured fix it belongs to.
+    mutating func captureNamed(_ coordinate: Coordinate, placeName: String) {
+        if location == .captured(coordinate, placeName: nil) {
+            location = .captured(coordinate, placeName: placeName)
+        }
+    }
+
+    /// Records a failed capture. An edited entry falls back to the location it already had.
+    mutating func captureFailed(_ error: LocationError) {
+        guard isLocating else {
+            return
+        }
+        if case .existing = savedLocation {
+            location = savedLocation
+        } else {
+            location = error == .denied ? .denied : .failed
+        }
+    }
+
+    /// The chip's text for the current state.
+    var locationLabel: String {
+        guard capturesLocation else {
+            return "No Location"
+        }
+        switch location {
+        case .none, .locating:
+            return "Locating…"
+        case .captured(_, let placeName):
+            return placeName ?? "Current Location"
+        case .existing(let coordinate, let placeName):
+            return LocationLabel.text(
+                placeName: placeName,
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
+        case .denied:
+            return "Location Off"
+        case .failed:
+            return "Location Unavailable"
+        }
+    }
+
+    /// Writes the location choice to an entry. Call before saving.
+    ///
+    /// - Location turned off: clears coordinates and place name together.
+    /// - Captured in this sheet: sets coordinates, and the place name if it is already known.
+    /// - Anything else (unchanged, still locating, denied, failed): leaves the entry alone, so
+    ///   an edit never loses a location it didn't deliberately replace.
+    func applyLocation(to entry: Entry) {
+        guard capturesLocation else {
+            if entry.latitude != nil || entry.longitude != nil || entry.placeName != nil {
+                entry.latitude = nil
+                entry.longitude = nil
+                entry.placeName = nil
+            }
+            return
+        }
+        if case .captured(let coordinate, let placeName) = location {
+            entry.latitude = coordinate.latitude
+            entry.longitude = coordinate.longitude
+            entry.placeName = placeName
+        }
     }
 
     /// A new, uninserted entry with the topic, date, and trimmed body.
@@ -129,7 +297,8 @@ struct EntryDraft {
         Entry(body: trimmedBody, date: date, topic: topic)
     }
 
-    /// Writes the date and trimmed body to an existing entry, and nothing else.
+    /// Writes the date and trimmed body to an existing entry, and nothing else (not photos, not
+    /// location).
     func apply(to entry: Entry) {
         entry.date = date
         entry.body = trimmedBody
@@ -186,6 +355,9 @@ struct EntryComposerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(\.imageProcessor) private var imageProcessor
+    @Environment(\.locationService) private var locationService
+    @Environment(\.locationCapture) private var locationCapture
+    @Environment(\.openURL) private var openURL
     /// A per-device preference, not synced. See `LastUsedTopic`.
     @AppStorage(LastUsedTopic.storageKey) private var lastUsedTopic: Data?
     @State private var draft: EntryDraft
@@ -200,6 +372,9 @@ struct EntryComposerView: View {
     /// Picked photos not yet processed; each shows a placeholder tile.
     @State private var pendingPhotoCount = 0
     @State private var photoMessage: String?
+    /// The location request in flight. Tied to the sheet, so dismissing it cancels the request.
+    @State private var captureID: UUID?
+    @State private var captureStartedAt: ContinuousClock.Instant?
     @FocusState private var isBodyFocused: Bool
 
     /// - Parameter draft: Overrides the draft derived from `mode`; previews use it to show a
@@ -266,14 +441,70 @@ struct EntryComposerView: View {
         .task(id: photoBatch?.id) {
             await processPhotoBatch()
         }
+        .task(id: captureID) {
+            await captureLocation()
+        }
         .onAppear {
             if isFromList, draft.topic == nil {
                 // The default topic is where the sheet starts, not a change to it.
                 let topic = LastUsedTopic.resolve(stored: lastUsedTopic, among: topics)
-                draft.topic = topic
-                original.topic = topic
+                draft.setTopic(topic)
+                original.setTopic(topic)
             }
             isBodyFocused = draft.dictation == .idle
+            // Location is captured when the composer opens, not on Save.
+            syncLocationCapture()
+        }
+    }
+
+    // MARK: Location
+
+    /// Starts a capture when the draft wants one, and stops one it no longer wants. Call after
+    /// anything that changes the draft's location choice.
+    private func syncLocationCapture() {
+        if draft.needsCapture {
+            draft.captureStarted()
+            captureStartedAt = .now
+            captureID = UUID()
+        } else if !draft.capturesLocation {
+            captureID = nil
+        }
+    }
+
+    /// One fix, then its place name if the device is online. This is where the system asks for
+    /// location access, the first time a composer opens with location on.
+    private func captureLocation() async {
+        guard captureID != nil else {
+            return
+        }
+        do {
+            let coordinate = try await locationService.currentLocation(
+                timeout: LocationCaptureRule.timeout
+            )
+            draft.captureSucceeded(coordinate)
+            if let name = try? await locationService.placeName(for: coordinate) {
+                draft.captureNamed(coordinate, placeName: name)
+            }
+        } catch let error as LocationError {
+            draft.captureFailed(error)
+        } catch {
+            // Cancelled: the sheet closed or the location was turned off.
+        }
+    }
+
+    /// After a save, hands unfinished location work to the app so it outlives the sheet: a fix
+    /// still being waited for, or a place name not yet looked up.
+    private func handOffLocation(for entry: Entry) {
+        guard let locationCapture else {
+            return
+        }
+        if draft.isLocating, let captureStartedAt {
+            let remaining = LocationCaptureRule.timeout - (ContinuousClock.now - captureStartedAt)
+            if remaining > .zero {
+                locationCapture.startLateFix(for: entry.persistentModelID, timeout: remaining)
+            }
+        } else if LocationCapture.needsPlaceName(entry) {
+            locationCapture.startFillingPlaceName(for: entry.persistentModelID)
         }
     }
 
@@ -323,18 +554,22 @@ struct EntryComposerView: View {
 
     /// Dismisses on success. On failure the sheet stays open with the draft intact.
     private func save() {
-        if case .edit(let entry) = mode {
+        let entry: Entry
+        if case .edit(let edited) = mode {
+            entry = edited
             draft.apply(to: entry)
-            draft.applyPhotos(to: entry, in: modelContext)
         } else {
-            let entry = draft.makeEntry()
+            entry = draft.makeEntry()
             modelContext.insert(entry)
-            draft.applyPhotos(to: entry, in: modelContext)
         }
+        draft.applyPhotos(to: entry, in: modelContext)
+        draft.applyLocation(to: entry)
+        // Saving doesn't wait for a fix: one that arrives later is attached to the saved entry.
         saveError = modelContext.saveOrRollback()
         guard saveError == nil else {
             return
         }
+        handOffLocation(for: entry)
         if !isEditing, let topic = draft.topic {
             // Only new entries move the last-used topic; edits don't.
             lastUsedTopic = LastUsedTopic.encode(topic)
@@ -361,46 +596,144 @@ struct EntryComposerView: View {
 
     // MARK: Chips
 
+    /// One row when the chips fit. When they don't (three chips from the topics list), the
+    /// location chip drops to its own row so nothing is pushed off screen.
     private var chipRow: some View {
-        HStack(spacing: 8) {
-            if isFromList {
-                Menu {
-                    Picker("Topic", selection: $draft.topic) {
-                        ForEach(Topic.sortedByRecentActivity(topics)) { topic in
-                            Text(topic.title).tag(Optional(topic))
-                        }
-                    }
-                } label: {
-                    ComposerChip {
-                        TopicChip(topic: draft.topic, dotSize: 9)
-                    }
-                }
-                .accessibilityLabel("Topic")
-                .accessibilityValue(draft.topic?.title ?? "None")
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                topicChip
+                dateChip
+                locationChip
             }
-            Button {
-                isPickingDate = true
-            } label: {
-                ComposerChip {
-                    Image(systemName: "calendar")
-                        .foregroundStyle(.secondary)
-                    Text(EntryTimeline.composerDate(draft.date, now: now))
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    topicChip
+                    dateChip
                 }
-            }
-            .accessibilityLabel("Date")
-            .accessibilityValue(EntryTimeline.composerDate(draft.date, now: now))
-            .popover(isPresented: $isPickingDate) {
-                // Back-dating is fine; future dates are not.
-                DatePicker("Date", selection: $draft.date, in: ...now)
-                    .datePickerStyle(.graphical)
-                    .padding()
-                    .frame(minWidth: 320)
-                    .presentationCompactAdaptation(.popover)
+                locationChip
             }
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 16)
         .padding(.top, 14)
+    }
+
+    /// The topic picker's selection, routed through the draft so the location choice follows
+    /// the topic.
+    private var topicSelection: Binding<Topic?> {
+        Binding(
+            get: { draft.topic },
+            set: { topic in
+                draft.setTopic(topic)
+                syncLocationCapture()
+            }
+        )
+    }
+
+    /// Only when opened from the topics list; otherwise the topic is in the subtitle.
+    @ViewBuilder private var topicChip: some View {
+        if isFromList {
+            Menu {
+                Picker("Topic", selection: topicSelection) {
+                    ForEach(Topic.sortedByRecentActivity(topics)) { topic in
+                        Text(topic.title).tag(Optional(topic))
+                    }
+                }
+            } label: {
+                ComposerChip {
+                    TopicChip(topic: draft.topic, dotSize: 9)
+                }
+            }
+            .accessibilityLabel("Topic")
+            .accessibilityValue(draft.topic?.title ?? "None")
+        }
+    }
+
+    private var dateChip: some View {
+        Button {
+            isPickingDate = true
+        } label: {
+            ComposerChip {
+                Image(systemName: "calendar")
+                    .foregroundStyle(.secondary)
+                Text(EntryTimeline.composerDate(draft.date, now: now))
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityLabel("Date")
+        .accessibilityValue(EntryTimeline.composerDate(draft.date, now: now))
+        .popover(isPresented: $isPickingDate) {
+            // Back-dating is fine; future dates are not.
+            DatePicker("Date", selection: $draft.date, in: ...now)
+                .datePickerStyle(.graphical)
+                .padding()
+                .frame(minWidth: 320)
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var locationChip: some View {
+        Menu {
+            if draft.capturesLocation {
+                if draft.isEditing, !draft.isLocating {
+                    Button("Use Current Location", systemImage: "location") {
+                        draft.requestCurrentLocation()
+                        syncLocationCapture()
+                    }
+                } else if draft.location == .failed {
+                    Button("Try Again", systemImage: "arrow.clockwise") {
+                        draft.requestCurrentLocation()
+                        syncLocationCapture()
+                    }
+                }
+                if draft.location == .denied,
+                    let url = URL(string: UIApplication.openSettingsURLString)
+                {
+                    Button("Open Settings", systemImage: "gear") {
+                        openURL(url)
+                    }
+                }
+                Button("Remove Location", systemImage: "location.slash") {
+                    draft.setCapturesLocation(false)
+                    syncLocationCapture()
+                }
+            } else {
+                Button(
+                    draft.isEditing ? "Use Current Location" : "Include Location",
+                    systemImage: "location"
+                ) {
+                    draft.setCapturesLocation(true)
+                    syncLocationCapture()
+                }
+            }
+        } label: {
+            ComposerChip {
+                locationChipIcon
+                Text(draft.locationLabel)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityLabel("Location")
+        .accessibilityValue(draft.locationLabel)
+    }
+
+    @ViewBuilder private var locationChipIcon: some View {
+        if !draft.capturesLocation {
+            Image(systemName: "location.slash")
+                .foregroundStyle(.secondary)
+        } else {
+            switch draft.location {
+            case .none, .locating:
+                ProgressView()
+                    .controlSize(.mini)
+            case .captured, .existing:
+                Image(systemName: "location.fill")
+                    .foregroundStyle(.secondary)
+            case .denied, .failed:
+                Image(systemName: "location.slash")
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     // MARK: Text + dictation
@@ -595,6 +928,33 @@ private struct TopicSubtitle: ViewModifier {
     ComposerPreview(state: .newInTopic)
 }
 
+#Preview("Location · captured") {
+    ComposerPreview(state: .newInTopic)
+}
+
+#Preview("Location · captured · Dark") {
+    ComposerPreview(state: .newInTopic)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Location · locating") {
+    ComposerPreview(state: .newInTopic, location: FakeLocationService(delay: .seconds(600)))
+}
+
+#Preview("Location · no place name") {
+    ComposerPreview(state: .newInTopic, location: FakeLocationService(failsGeocoding: true))
+}
+
+#Preview("Location · denied") {
+    ComposerPreview(state: .newInTopic, location: FakeLocationService(location: .failure(.denied)))
+}
+
+#Preview("Location · unavailable") {
+    ComposerPreview(
+        state: .newInTopic, location: FakeLocationService(location: .failure(.unavailable))
+    )
+}
+
 #Preview("Edit · dictation · photos") {
     ComposerPreview(state: .editDictating)
 }
@@ -613,13 +973,15 @@ private struct ComposerPreview: View {
     }
 
     let state: PreviewState
+    /// Decides what the location chip shows. "Sedona trip" captures location by default.
+    var location = FakeLocationService()
 
     var body: some View {
         Color.clear
             .sheet(isPresented: .constant(true)) {
                 composer
             }
-            .sampleData()
+            .sampleData(location: location)
     }
 
     @ViewBuilder private var composer: some View {

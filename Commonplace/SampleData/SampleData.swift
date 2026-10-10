@@ -41,6 +41,20 @@ enum SampleData {
     }
 }
 
+/// Approximate coordinates for the seed's places; `name` is `nil` for an entry whose place
+/// name hasn't been looked up.
+private struct Place {
+    let latitude: Double
+    let longitude: Double
+    let name: String?
+
+    init(_ latitude: Double, _ longitude: Double, _ name: String?) {
+        self.latitude = latitude
+        self.longitude = longitude
+        self.name = name
+    }
+}
+
 private struct Seeder {
     let context: ModelContext
     private var nextPhotoSeed = 0
@@ -105,17 +119,20 @@ private struct Seeder {
             color: .orange,
             createdAt: SampleData.date(2026, 9, 24, 19, 0)
         )
+        topic.capturesLocation = true
         addEntry(
             to: topic, at: SampleData.date(2026, 10, 4, 5, 58),
             """
             Last sunrise. Airport Mesa overlook was packed by 6:15, so we walked the loop trail \
             instead and had the whole west side to ourselves.
             """,
-            photos: 3
+            photos: 3,
+            place: Place(34.8553, -111.7800, "Airport Mesa")
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 10, 3, 19, 24),
-            "Elote Cafe. Get the fire-roasted corn. 50-minute wait, worth it."
+            "Elote Cafe. Get the fire-roasted corn. 50-minute wait, worth it.",
+            place: Place(34.8623, -111.7629, "Sedona, AZ")
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 10, 3, 8, 50),
@@ -124,7 +141,8 @@ private struct Seeder {
             for the bridge photo was forty people deep — the view from the far side is better \
             anyway.
             """,
-            photos: 5
+            photos: 5,
+            place: Place(34.9027, -111.8138, "Devil’s Bridge Trailhead")
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 10, 2, 6, 10),
@@ -139,7 +157,8 @@ private struct Seeder {
 
             Next time: gloves for the slickrock, and a weekday.
             """,
-            photos: 6
+            photos: 6,
+            place: Place(34.8253, -111.7885, "Cathedral Rock Trailhead")
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 10, 1, 15, 15),
@@ -147,11 +166,14 @@ private struct Seeder {
             Rest day. Tlaquepaque in the afternoon; bought one small blue tile for the kitchen \
             windowsill.
             """,
-            photos: 1
+            photos: 1,
+            // Saved offline: coordinates with no place name yet.
+            place: Place(34.8626, -111.7634, nil)
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 9, 30, 16, 40),
-            "Arrived. 91° at check-in. Everything is redder than the photos."
+            "Arrived. 91° at check-in. Everything is redder than the photos.",
+            place: Place(34.8697, -111.7610, "Sedona, AZ")
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 9, 30, 17, 5),
@@ -233,13 +255,15 @@ private struct Seeder {
         addEntry(
             to: topic, at: SampleData.date(2026, 6, 14, 7, 20),
             "Camped at the Forks of Red Creek. Cold enough for a hat in June.",
-            photos: 2
+            photos: 2,
+            place: Place(39.0170, -79.3540, nil)
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 6, 13, 9, 5),
             """
             Bear Rocks trailhead by nine. Fog so thick on the plateau we went cairn to cairn.
-            """
+            """,
+            place: Place(39.0637, -79.3035, "Bear Rocks Trailhead")
         )
     }
 
@@ -283,10 +307,14 @@ private struct Seeder {
         at date: Date,
         _ body: String,
         photos photoCount: Int = 0,
+        place: Place? = nil,
         deletedAt: Date? = nil
     ) {
         let entry = Entry(body: body, date: date, topic: topic, createdAt: date)
         entry.deletedAt = deletedAt
+        entry.latitude = place?.latitude
+        entry.longitude = place?.longitude
+        entry.placeName = place?.name
         context.insert(entry)
         for order in 0..<photoCount {
             let photo = Photo(

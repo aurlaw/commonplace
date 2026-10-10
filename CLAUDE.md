@@ -9,10 +9,10 @@ Phase briefs live in the Tech Obsidian vault under `commonplace/phases/`.
 - `Commonplace.xcodeproj` — Xcode project. **Never edit it** (including `project.pbxproj`)
 - `Commonplace/` — app sources
   - `Models/` — `SchemaV1` models and `TopicColor` (Foundation only, no SwiftUI)
-  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, and `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`)
+  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, and `LocationCapture`
   - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`) and the pure `EntryTimeline` helpers
   - `Screens/` — one file per screen or sheet; `RootView` owns the navigation stack
-  - `SampleData/` — the seed, placeholder images, and `PreviewContainer`
+  - `SampleData/` — the seed, placeholder images, `PreviewContainer`, and `FakeLocationService`
 - `CommonplaceTests/` — unit tests (Swift Testing), hosted in the app
 - `CommonplaceUITests/` — UI tests; not run by `make test`
 - `docs/design/` — design reference exports
@@ -94,6 +94,20 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - **Photo hard-delete exception:** removing a photo in the composer calls `modelContext.delete(photo)` on Save, with no Trash and no confirmation. This is the one user-facing delete outside permanent delete and purge. Cancel discards the removal
 - **Never show a full-size bitmap in a grid or strip.** Small tiles and strips use `thumbnailData` through `PhotoImage`. Anything larger uses `DownsampledPhotoImage`, which decodes `imageData` off the main actor at a stated pixel size and shows the thumbnail until it is ready (and whenever `imageData` is still `nil` after a sync). The viewer keeps a full-size bitmap for the visible page only
 
+### Location
+
+- **`LocationService`** (protocol, injected through the `locationService` environment value) gives a one-shot fix and a place name. `CoreLocationService` is the real one; `FakeLocationService` (fixed coordinate, configurable delay, denied / unavailable, offline geocoding) is used by tests, previews, shell mode, and the hosted test run. `.sampleData()` injects the fake, so previews never ask for access or geocode
+- **APIs chosen:** the fix uses `CLLocationUpdate.liveUpdates()` with `CLServiceSession(authorization: .whenInUse)` — `Sendable` async APIs with no delegate to bridge. The place name uses MapKit's `MKReverseGeocodingRequest`; **`CLGeocoder` is deprecated in iOS 26, don't use it**. Maps opens through `MKMapItem(location:address:)`; `MKPlacemark` is deprecated too
+- **When In Use only.** No background location, no `allowsBackgroundLocationUpdates`, no region or significant-change monitoring. Permission is asked at first need — the first time a composer opens with location on — never at launch. The topic editor's toggle is only a preference and asks for nothing
+- **Capture rules** (`LocationCaptureRule`): capture starts when the composer opens, not on Save. Take the first fix accurate to 100 m, otherwise the best fix within 15 s; a reduced-accuracy (approximate) fix is accepted as-is. Time spent on the permission prompt doesn't count against the 15 s
+- **`EntryDraft` location state:** `capturesLocation` starts from the topic's setting for a new entry and from `entry.hasLocation` for an edit. In the from-list composer it follows the picked topic (`setTopic(_:)`) until the user chooses by hand. `applyLocation(to:)` clears all three fields when location is off, sets them when a fix was captured in the sheet, and otherwise leaves the entry alone — so an edit never loses a location it didn't deliberately replace, and back-dating never touches it. `apply(to:)` and `applyPhotos(to:in:)` never touch location
+- **Dirty rules:** choosing to include or remove location is dirty, and so is a fix captured while editing. A fix captured automatically for a new entry is not
+- **Saving doesn't wait for a fix.** `LocationCapture` (app-level, in the `locationCapture` environment value) takes over when the sheet closes: `startLateFix(for:timeout:)` keeps locating for the rest of the 15 s and attaches the coordinates only if the entry still has none and isn't trashed. A late fix therefore never replaces an edited entry's existing location
+- **Place-name rule** (`PlaceCandidate.placeName`): the point of interest's name when the result is one; otherwise the city with its state or province ("Sedona, AZ", MapKit's `cityWithContext(.short)`); otherwise the city alone; otherwise `nil`, and the entry shows formatted coordinates (`LocationLabel`)
+- **Backfill:** entries saved with coordinates and no place name (offline) are named later by `LocationCapture.backfillPlaceNames()`, run from `RootView` on launch and each return to the foreground. It works serially, five per run, and stops at the first failed lookup. No timers or polling
+- **Entry detail** shows `EntryLocationView` below the photos when `entry.hasLocation`: a non-interactive `Map` with a pin in the topic's color, and a place line that is always visible so the location is usable when map tiles aren't available
+- Model files still import only Foundation; `Coordinate` lives in `Persistence/LocationService.swift`
+
 ### Entry detail
 
 - **Entry detail is a reader for the whole topic, and paging happens in place.** The navigation stack keeps the `Entry` that was tapped; swiping or tapping a neighbor changes which entry is shown (`current`) without pushing. Back and the topic chip always return to the topic
@@ -110,7 +124,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
 
 - The seed now exists for previews (and the switch). `SampleData.seed(into:)` has a `precondition` that the container is in-memory with CloudKit disabled. Sample data must never reach the persistent container
-- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I5: location, Move to Trash, Delete Permanently, Trash actions, Settings retention, dictation (the button only toggles its visual state), search, and the photo viewer's Share button
+- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I6: Move to Trash, Delete Permanently, Trash actions, Settings retention, dictation (the button only toggles its visual state), search, and the photo viewer's Share button
 - Seed dates are fixed (September–October 2026) around `SampleData.now`, which previews pass as `referenceDate`
 - Seed photos are generated at seed time (`PlaceholderImage`); no image files are bundled or downloaded
 
@@ -124,7 +138,7 @@ Models are defined inside `SchemaV1` (a `VersionedSchema`, version `1.0.0`) and 
 
 ### Location fields
 
-Added in I2, ahead of location capture, so the schema is settled before real data accumulates. No UI uses them yet.
+Added in I2 so the schema was settled before real data accumulated; used since I6 (see UI → Location).
 
 - `Topic.capturesLocation: Bool = false` — whether new entries in the topic capture location by default
 - `Entry.latitude: Double?`, `Entry.longitude: Double?`, `Entry.placeName: String?` — all `nil` by default
