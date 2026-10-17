@@ -1,8 +1,9 @@
 import SwiftData
 import SwiftUI
 
-/// Settings: how long Trash keeps items, and the app version.
+/// Settings: the app lock, how long Trash keeps items, and the app version.
 struct SettingsView: View {
+    @Environment(AppLock.self) private var appLock
     @Environment(\.modelContext) private var modelContext
     @Environment(\.referenceDate) private var referenceDate
     /// A per-device preference, not synced. Stored by raw value.
@@ -14,6 +15,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            lockSection
             Section {
                 Picker("Keep items in Trash", selection: retentionBinding) {
                     ForEach(TrashRetention.allCases) { retention in
@@ -56,6 +58,49 @@ struct SettingsView: View {
             )
         }
         .saveErrorAlert($saveError)
+    }
+
+    // MARK: Lock
+
+    private var lockSection: some View {
+        Section {
+            Toggle("Require \(lockKind.name)", isOn: lockBinding)
+                .disabled(appLock.availability.kind == nil)
+        } footer: {
+            Text(lockFooter)
+        }
+    }
+
+    private var lockKind: BiometryKind {
+        appLock.availability.kind ?? .faceID
+    }
+
+    /// Changing it either way authenticates first; the toggle moves only on success.
+    private var lockBinding: Binding<Bool> {
+        Binding(
+            get: { appLock.isEnabled },
+            set: { isOn in
+                Task { await appLock.setEnabled(isOn) }
+            }
+        )
+    }
+
+    private var lockFooter: String {
+        let rule = "Locks Commonplace when you open it and after you’ve been away for a minute."
+        switch appLock.availability {
+        case .available:
+            return rule
+        case .passcodeNotSet:
+            let reason =
+                appLock.wasTurnedOffUnavailable
+                ? "The lock was turned off because this iPhone no longer has a passcode."
+                : "Set a passcode for this iPhone to use the lock."
+            return "\(reason) \(rule)"
+        case .unavailable:
+            return appLock.wasTurnedOffUnavailable
+                ? "The lock was turned off because this iPhone can no longer authenticate."
+                : "The lock isn’t available on this iPhone."
+        }
     }
 
     private var retention: TrashRetention {

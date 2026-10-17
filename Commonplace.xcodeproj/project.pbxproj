@@ -430,6 +430,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Commonplace/Info.plist;
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Commonplace uses Face ID to keep your journal private.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Commonplace records where you write an entry, for topics where you've turned location on. Locations stay in your private iCloud.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Commonplace uses the microphone to dictate entries. Audio is transcribed on your iPhone and never stored.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on your iPhone.";
@@ -443,7 +444,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.aurlaw.commonplace;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -472,6 +473,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Commonplace/Info.plist;
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Commonplace uses Face ID to keep your journal private.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Commonplace records where you write an entry, for topics where you've turned location on. Locations stay in your private iCloud.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Commonplace uses the microphone to dictate entries. Audio is transcribed on your iPhone and never stored.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on your iPhone.";
@@ -485,7 +487,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.aurlaw.commonplace;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;

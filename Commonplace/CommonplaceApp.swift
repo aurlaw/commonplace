@@ -15,6 +15,8 @@ struct CommonplaceApp: App {
     private let transcriptionService: any TranscriptionService
     /// `nil` in shell mode and under tests, where nothing should geocode or outlive a sheet.
     private let locationCapture: LocationCapture?
+    /// Under tests and in shell mode, a lock that can never engage, with its own settings.
+    @State private var appLock: AppLock
 
     init() {
         container = Result {
@@ -31,6 +33,14 @@ struct CommonplaceApp: App {
         locationService = usesRealStore ? CoreLocationService() : FakeLocationService()
         transcriptionService =
             usesRealStore ? SpeechTranscriptionService() : FakeTranscriptionService()
+        _appLock = State(
+            initialValue: usesRealStore
+                ? AppLock(authenticator: LocalAuthenticator())
+                : AppLock(
+                    defaults: UserDefaults(suiteName: "appLock.inert") ?? .standard,
+                    authenticator: FakeBiometricAuthenticator(availability: .unavailable)
+                )
+        )
         if usesRealStore, case .success(let container) = container {
             locationCapture = LocationCapture(
                 service: locationService, context: container.mainContext
@@ -50,6 +60,7 @@ struct CommonplaceApp: App {
                     .environment(\.locationService, locationService)
                     .environment(\.transcriptionService, transcriptionService)
                     .environment(\.locationCapture, locationCapture)
+                    .appLock(appLock)
             case .failure(let error):
                 ContainerErrorView(message: error.localizedDescription)
             }

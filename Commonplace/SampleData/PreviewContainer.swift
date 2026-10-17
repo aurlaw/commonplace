@@ -11,6 +11,22 @@ enum PreviewContainer {
         }
     }()
 
+    /// Unlocked, with Face ID available and its own settings, so previews never lock.
+    static let appLock = AppLock(
+        defaults: UserDefaults(suiteName: "preview.appLock") ?? .standard,
+        authenticator: FakeBiometricAuthenticator()
+    )
+
+    /// Locked, for the lock screen's previews.
+    static let lockedAppLock: AppLock = {
+        let defaults = UserDefaults(suiteName: "preview.appLock.locked") ?? .standard
+        defaults.set(true, forKey: AppLock.enabledKey)
+        return AppLock(
+            defaults: defaults,
+            authenticator: FakeBiometricAuthenticator(result: .cancelled)
+        )
+    }()
+
     /// A seeded topic by title.
     static func topic(_ title: String) -> Topic? {
         let descriptor = FetchDescriptor<Topic>(predicate: #Predicate { $0.title == title })
@@ -36,5 +52,6 @@ extension View {
             .environment(\.referenceDate, SampleData.now)
             .environment(\.locationService, location)
             .environment(\.transcriptionService, transcription)
+            .environment(PreviewContainer.appLock)
     }
 }

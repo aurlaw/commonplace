@@ -9,10 +9,10 @@ Phase briefs live in the Tech Obsidian vault under `commonplace/phases/`.
 - `Commonplace.xcodeproj` — Xcode project. **Never edit it** (including `project.pbxproj`)
 - `Commonplace/` — app sources
   - `Models/` — `SchemaV1` models and `TopicColor` (Foundation only, no SwiftUI)
-  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, `TranscriptionService` (with `AudioLevelMeter` and `DictationRule`), `EntrySearch`, and `TrashOperations` (with `TrashRetention`)
+  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, `TranscriptionService` (with `AudioLevelMeter` and `DictationRule`), `EntrySearch`, `BiometricAuthenticator`, `AppLock`, and `TrashOperations` (with `TrashRetention`)
   - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`) and the pure `EntryTimeline` and search helpers (`Search.swift`: `SearchableText`, `SearchQuery`, `SearchSnippet`, `SearchResults`)
   - `Screens/` — one file per screen or sheet; `RootView` owns the navigation stack
-  - `SampleData/` — the seed, placeholder images, `PreviewContainer`, `FakeLocationService`, and `FakeTranscriptionService`
+  - `SampleData/` — the seed, placeholder images, `PreviewContainer`, `FakeLocationService`, `FakeTranscriptionService`, and `FakeBiometricAuthenticator`
 - `CommonplaceTests/` — unit tests (Swift Testing), hosted in the app
 - `CommonplaceUITests/` — UI tests; not run by `make test`
 - `docs/design/` — design reference exports
@@ -126,6 +126,23 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - **Opening a result pushes the topic and then the entry** onto the path (`path.append(topic)`, `path.append(entry)`); a topic result pushes the topic. Back from the entry goes to the topic, and Back again to the results with the query intact. Result rows check `isAvailable` before reading their model
 - Rows read "Topic, date, [Archived,] snippet[, place]" to VoiceOver; the result counts are announced when they change after the debounce. Empty results show `ContentUnavailableView.search(text:)`
 
+### App lock
+
+- **Optional, off by default, per device.** Settings live in `UserDefaults` under `AppLock.enabledKey` (`appLock.isEnabled`), `AppLock.promptedKey` (`appLock.hasPrompted`), and `AppLock.turnedOffKey` (`appLock.turnedOffUnavailable`); never synced. `AppLock` reads and writes them directly (not `@AppStorage`) so tests can inject a suite
+- **`BiometricAuthenticator`** (protocol): `canAuthenticate()` → `.available(BiometryKind)`, `.passcodeNotSet`, or `.unavailable`; `authenticate(reason:)` → `.success`, `.cancelled`, `.failed`, `.unavailable`. `LocalAuthenticator` is the real one: `LAContext` with **`.deviceOwnerAuthentication`** (Face ID / Touch ID, falling back to the passcode), a **fresh context per check and attempt**, and the async `evaluatePolicy(_:localizedReason:)`. The biometry kind comes from a second `canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics)` check, because `biometryType` is only filled in by a biometric policy; no biometry enrolled → "Passcode" wording. Cancel, system/app cancel, fallback, and not-interactive map to `.cancelled`; `passcodeNotSet` to `.unavailable`; anything else to `.failed`. `FakeBiometricAuthenticator` (fixed availability and result) is used by tests and previews; tests and shell mode get an `AppLock` with an unavailable fake and its own defaults suite, so it never engages
+- **`AppLock`** (`@Observable`, main actor; owned by `CommonplaceApp`, in the environment; injected clock `now`). Rules, all unit-tested:
+  - cold launch + enabled → locked (set in `init`, before the first frame)
+  - `.inactive` + enabled → obscured (privacy cover); `.background` → record `backgroundedAt`, stay obscured
+  - `.active` + enabled → locked if `backgroundedAt` is at least 60 s ago (`AppLock.gracePeriod`), otherwise just uncovered. **Inactive → active without a background (Control Center, a system prompt) never locks**; this reads the brief's "or no timestamp" as the cold-launch case, since locking there would loop on the Face ID prompt itself
+  - scene changes during an authentication are ignored (the system prompt makes the scene inactive)
+  - success → unlocked and uncovered; cancelled or failed → stays locked with the Unlock button
+  - disabled → never locked or obscured
+  - the lock screen authenticates automatically **once per lock** (`lockCount`), and only while the scene is active
+- **Turning it on or off** (the one-time offer's Turn On, and the Settings toggle in both directions) authenticates first; only success changes the setting. The offer is shown once, after the first frame, as an alert over the topics list, when not yet answered, the lock is off, and the device can authenticate; answering either way sets `hasPrompted`. Turning it on doesn't lock the current session
+- **Losing the ability to authenticate** (passcode removed), noticed at launch, on each return to `.active`, or from an attempt: the app unlocks, the setting turns off, and `wasTurnedOffUnavailable` makes Settings explain why
+- **Covering everything — never dismiss presented UI on lock.** Sheets, covers, alerts, pickers, and drafts stay as they are; the cover goes on top. `.appLock(_:)` (`Screens/LockScreen.swift`) adds both: a SwiftUI `.overlay` on the root view, which covers the first frame on a cold launch, and an **overlay window** — a second `UIWindow` on the scene at `.alert + 1`, hosting `LockScreen` in a `UIHostingController`, made key while covering (VoiceOver gets a screen-changed notification and the view is modal) and hidden after, with the previous key window made key again. A root-view overlay alone doesn't reach sheets or full-screen covers presented above it. **Not yet verified on a simulator or device** `[NEEDS VERIFICATION]`: that the window covers sheets, `fullScreenCover`, `PhotosPicker`, alerts, and the keyboard, that VoiceOver focus moves in and back, and that the keyboard returns after unlocking. Record the findings here
+- Settings: "Require Face ID" (per biometry) above Trash retention, disabled with an explanatory footer when the device can't authenticate. The composer already stops dictation when the scene leaves `.active` (I8)
+
 ### Location
 
 - **`LocationService`** (protocol, injected through the `locationService` environment value) gives a one-shot fix and a place name. `CoreLocationService` is the real one; `FakeLocationService` (fixed coordinate, configurable delay, denied / unavailable, offline geocoding) is used by tests, previews, shell mode, and the hosted test run. `.sampleData()` injects the fake, so previews never ask for access or geocode
@@ -156,7 +173,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
 
 - The seed now exists for previews (and the switch). `SampleData.seed(into:)` has a `precondition` that the container is in-memory with CloudKit disabled. Sample data must never reach the persistent container
-- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I9: the photo viewer's Share button
+- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I10: the photo viewer's Share button
 - Seed dates are fixed (September–October 2026) around `SampleData.now`, which previews pass as `referenceDate`
 - Seed photos are generated at seed time (`PlaceholderImage`); no image files are bundled or downloaded
 
