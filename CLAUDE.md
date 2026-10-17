@@ -9,10 +9,10 @@ Phase briefs live in the Tech Obsidian vault under `commonplace/phases/`.
 - `Commonplace.xcodeproj` — Xcode project. **Never edit it** (including `project.pbxproj`)
 - `Commonplace/` — app sources
   - `Models/` — `SchemaV1` models and `TopicColor` (Foundation only, no SwiftUI)
-  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, and `TrashOperations` (with `TrashRetention`)
+  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, `TranscriptionService` (with `AudioLevelMeter` and `DictationRule`), and `TrashOperations` (with `TrashRetention`)
   - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`) and the pure `EntryTimeline` helpers
   - `Screens/` — one file per screen or sheet; `RootView` owns the navigation stack
-  - `SampleData/` — the seed, placeholder images, `PreviewContainer`, and `FakeLocationService`
+  - `SampleData/` — the seed, placeholder images, `PreviewContainer`, `FakeLocationService`, and `FakeTranscriptionService`
 - `CommonplaceTests/` — unit tests (Swift Testing), hosted in the app
 - `CommonplaceUITests/` — UI tests; not run by `make test`
 - `docs/design/` — design reference exports
@@ -76,7 +76,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - **Everything travels with the entry:** photos, location, date, body. The destination's `capturesLocation` setting never adds or removes a location, and in edit mode `setTopic(_:)` leaves the draft's location state untouched. The last-used topic doesn't change on a move. Only live entries move
 - After a move, entry detail falls back like it does for a trashed entry (neighbor, or back to the topic) and shows a short "Moved to …" confirmation (`.transientMessage(_:)`, announced to VoiceOver)
 - `EntryDraft.apply(to:)` writes the date, the body, and a changed topic — never photos, location, `createdAt`, or `deletedAt`
-- Dictation state and its grey pending text are never written to the body
+- Dictation state and its grey pending text are never written to the body; only finals are (see Dictation)
 - **Last-used topic** is a per-device preference in `@AppStorage(LastUsedTopic.storageKey)`: the topic's `PersistentIdentifier` as JSON, not synced. It is recorded when a **new** entry is saved (edits don't change it). "+ Entry" on the topics list opens on it if it is still live and not archived, otherwise on the first topic by recent activity; the rules are in `LastUsedTopic.resolve(stored:among:)`
 - **Topic screens read entries through the `Topic.entries` relationship**, not an `@Query`. `EntryDraftTests` checks that saving an entry into a topic, and editing one, is reported through Observation on the same context, which is what refreshes the timeline, the list row, and entry detail. If a screen is ever seen not to refresh (for example after a CloudKit import), switch that screen to an `@Query` filtered by topic rather than forcing a refresh
 
@@ -97,6 +97,22 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - `EntryDraft.applyPhotos(to:in:)` makes the entry's photos match the draft for new and edited entries alike: it inserts new photos, deletes dropped ones, and rewrites `order` 0…n-1. It touches nothing else on the entry. Adding or removing a photo makes the draft dirty
 - **Photo hard-delete exception:** removing a photo in the composer calls `modelContext.delete(photo)` on Save, with no Trash and no confirmation. This is the one delete outside `TrashOperations`. Cancel discards the removal
 - **Never show a full-size bitmap in a grid or strip.** Small tiles and strips use `thumbnailData` through `PhotoImage`. Anything larger uses `DownsampledPhotoImage`, which decodes `imageData` off the main actor at a stated pixel size and shows the thumbnail until it is ready (and whenever `imageData` is still `nil` after a sync). The viewer keeps a full-size bitmap for the visible page only
+
+### Dictation
+
+- **On-device only:** `SpeechAnalyzer` with a `SpeechTranscriber` module (`.volatileResults` reporting), in the device's locale mapped through `SpeechTranscriber.supportedLocale(equivalentTo:)`. No server recognition, no `SFSpeechRecognizer` fallback, no time limit, no audio written to disk, no background audio mode
+- **`TranscriptionService`** (protocol, injected through the `transcriptionService` environment value): `availability()`, `requestPermission()`, `installModel()` (progress 0…1), `start()` → `AsyncStream<TranscriptionEvent>` (`.volatile`, `.final`, `.level`, `.ended`), and `stop()`, which finalizes so the last volatile text arrives as `.final` before `.ended`. Abandoning the stream (cancelling the task reading it) tears the session down without finalizing. `SpeechTranscriptionService` (an actor) is the real one; `FakeTranscriptionService` (scripted events, configurable availability, permission, install progress and failures) is used by tests, previews, shell mode, and the hosted test run, and `.sampleData()` injects it. The composer keeps the service a dictation started on (`activeTranscription`) and stops that one
+- **Speech model:** `AssetInventory.status(forModules:)` decides `.needsModel`; the first mic tap downloads it through `AssetInventory.assetInstallationRequest(supporting:)` → `downloadAndInstall()`, with progress polled from the request's `Progress` and shown in the dictation control. A failed download (offline) shows "Connect to the internet once to download dictation"; once installed, dictation works offline
+- **Permissions:** microphone access (`AVAudioApplication.requestRecordPermission()`) is asked at the first mic tap, never at launch. Denied → an alert with Open Settings. **Whether `SpeechTranscriber` also needs `SFSpeechRecognizer` authorization is unverified** `[NEEDS VERIFICATION]`: the iOS 27 SDK's Speech interface says nothing about it, so the app asks for the microphone only. `SpeechTranscriptionService.requestsSpeechRecognitionAuthorization` (currently `false`) turns the extra request and status check on if a device shows it is needed. Record the finding here once checked
+- **Audio format conversion rule:** the microphone's format usually differs from what the analyzer accepts, and a mismatch fails silently. The target comes from `SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:)`, and every tap buffer is converted with `AVAudioConverter` before it is wrapped in `AnalyzerInput`
+- **Real-time thread rule:** the input tap runs on a real-time audio thread. Its block is built in a `nonisolated static` function (`makeTap`) so it isn't actor-isolated, and it captures only what it is given — the converter, the target format, and the two stream continuations — never actor or main-actor state. Buffers reach the analyzer through its input stream; levels reach the UI through the event stream
+- **Level:** RMS of each buffer → decibels mapped to 0…1 (floor −50 dB) → smoothed → throttled to about 20 updates a second, in `AudioLevelMeter` (pure and tested)
+- **Audio session:** `.record` with the `.spokenAudio` mode (falling back to `.default` if the mode is refused), deactivated with `.notifyOthersOnDeactivation` so paused music resumes. Interruptions, the input device going away or appearing, and engine configuration changes stop dictation, keeping every final; so does the scene leaving `.active`. Dismissing the sheet cancels the session
+- **States** (`EntryDraft.Dictation`): `.idle`, `.preparing` (availability and permission), `.downloading(progress:)`, `.listening(pending:elapsedSeconds:level:)`, `.finishing(pending:)`, `.unavailable(_)`. `.unavailable` is turned straight into the alert or a `.transientMessage` and back to `.idle`. Tapping the control while preparing or downloading gives up
+- **Insertion rules** (`EntryDraft` + `DictationSpacing`, pure and tested): the insertion point is the end of the editor's selection (`TextEditor(text:selection:)`) when listening starts, as a character offset; with no selection (never focused), text appends. Each final is trimmed and spliced in there, with a space before it unless it follows whitespace, an opening bracket or curly quote, or the start, or begins with closing punctuation; and a space after it unless the next character is whitespace or closing punctuation, or the end. The point then moves past the words. Pending text is shown grey at the insertion point, never written to `body`
+- **Editing is paused while listening:** the editor is swapped for a read-only view. Stop shows `.finishing` (spinner), waits up to `DictationRule.finishTimeout` (2 s) for the last finals, drops anything still unconfirmed, and returns to the editor with the cursor after the inserted text
+- **Save while listening** stops, waits the same way, then saves if the draft is valid (Save is enabled while listening when there's a topic and pending words). **Cancel while listening** drops the pending tail at once; inserted finals are already in the draft, so the usual discard prompt applies. Dictation state never makes a draft dirty; inserted finals do
+- VoiceOver: the mic is "Dictate"; starting announces "Listening", ending announces "Dictation stopped"; volatile updates aren't announced
 
 ### Location
 
@@ -128,7 +144,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
 
 - The seed now exists for previews (and the switch). `SampleData.seed(into:)` has a `precondition` that the container is in-memory with CloudKit disabled. Sample data must never reach the persistent container
-- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I7: dictation (the button only toggles its visual state), search, and the photo viewer's Share button
+- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I8: search and the photo viewer's Share button
 - Seed dates are fixed (September–October 2026) around `SampleData.now`, which previews pass as `referenceDate`
 - Seed photos are generated at seed time (`PlaceholderImage`); no image files are bundled or downloaded
 

@@ -81,16 +81,48 @@ struct EntryDraft {
         case failed
     }
 
+    /// Where dictated text goes while dictating, as a character offset into `body`.
+    private(set) var dictationInsertionPoint: Int?
+
     enum Dictation: Equatable {
         case idle
-        /// `pending` is the unconfirmed tail of the transcript, shown grey.
-        case listening(pending: String, elapsedSeconds: Int)
+        /// Checking availability or asking for permission.
+        case preparing
+        /// Installing the speech model, 0…1.
+        case downloading(progress: Double)
+        /// `pending` is the unconfirmed tail of the transcript, shown grey at the insertion
+        /// point. `level` is the input level, 0…1.
+        case listening(pending: String, elapsedSeconds: Int, level: Float)
+        /// Stopped; waiting for the last words to become final.
+        case finishing(pending: String)
+        case unavailable(DictationUnavailable)
 
         /// The design's dictation-active frame.
         static let sample = Dictation.listening(
             pending: "and the wind at the saddle was strong enough to",
-            elapsedSeconds: 14
+            elapsedSeconds: 14,
+            level: 0.6
         )
+    }
+
+    enum DictationUnavailable: Equatable {
+        case unsupportedLanguage
+        case unsupportedDevice
+        /// No model installed and it couldn't be downloaded.
+        case needsNetwork
+        case permissionDenied
+        case failed
+
+        /// What the composer says. Denied access gets an alert instead.
+        var message: String {
+            switch self {
+            case .unsupportedLanguage: "Dictation isn’t available in your language"
+            case .unsupportedDevice: "Dictation isn’t available on this iPhone"
+            case .needsNetwork: "Connect to the internet once to download dictation"
+            case .permissionDenied: "Microphone access is off"
+            case .failed: "Dictation couldn’t start"
+            }
+        }
     }
 
     init(mode: ComposerMode, now: Date) {
@@ -164,6 +196,141 @@ struct EntryDraft {
             || photos.map(\.id) != original.photos.map(\.id)
             || capturesLocation != original.capturesLocation
             || (isEditing && hasNewLocation)
+    }
+
+    // MARK: Dictation
+
+    /// Listening, or finishing after a stop: the editor is replaced by a read-only view.
+    var isDictating: Bool {
+        switch dictation {
+        case .listening, .finishing: true
+        default: false
+        }
+    }
+
+    var isListening: Bool {
+        if case .listening = dictation { true } else { false }
+    }
+
+    var isFinishingDictation: Bool {
+        if case .finishing = dictation { true } else { false }
+    }
+
+    /// The unconfirmed text, while dictating.
+    var pendingDictation: String {
+        switch dictation {
+        case .listening(let pending, _, _), .finishing(let pending): pending
+        default: ""
+        }
+    }
+
+    /// Moves on from an availability check: to listening-ready (`.preparing`), to a model
+    /// download, or to the reason dictation can't start. `.needsPermission` stays
+    /// `.preparing`; the caller asks and checks again.
+    mutating func dictationChecked(_ availability: TranscriptionAvailability) {
+        switch availability {
+        case .available, .needsPermission:
+            dictation = .preparing
+        case .needsModel:
+            dictation = .downloading(progress: 0)
+        case .unsupportedLocale:
+            dictation = .unavailable(.unsupportedLanguage)
+        case .unsupportedDevice:
+            dictation = .unavailable(.unsupportedDevice)
+        case .permissionDenied:
+            dictation = .unavailable(.permissionDenied)
+        }
+    }
+
+    mutating func downloadProgressed(_ progress: Double) {
+        if case .downloading = dictation {
+            dictation = .downloading(progress: min(1, max(0, progress)))
+        }
+    }
+
+    /// Starts listening. Finals are inserted at `insertionOffset` (a character offset into
+    /// `body`, clamped to it), or appended when it is `nil`.
+    mutating func beginDictation(at insertionOffset: Int?) {
+        dictationInsertionPoint = min(max(insertionOffset ?? body.count, 0), body.count)
+        dictation = .listening(pending: "", elapsedSeconds: 0, level: 0)
+    }
+
+    /// Applies one event from the transcription service.
+    mutating func handle(_ event: TranscriptionEvent) {
+        switch event {
+        case .volatile(let text):
+            setPending(text)
+        case .final(let text):
+            insertFinal(text)
+        case .level(let level):
+            if case .listening(let pending, let elapsed, _) = dictation {
+                dictation = .listening(
+                    pending: pending, elapsedSeconds: elapsed, level: min(1, max(0, level)))
+            }
+        case .ended:
+            break
+        }
+    }
+
+    /// Replaces the unconfirmed text. Never written to `body`.
+    mutating func setPending(_ text: String) {
+        switch dictation {
+        case .listening(_, let elapsed, let level):
+            dictation = .listening(pending: text, elapsedSeconds: elapsed, level: level)
+        case .finishing:
+            dictation = .finishing(pending: text)
+        default:
+            break
+        }
+    }
+
+    mutating func setDictationElapsed(_ seconds: Int) {
+        if case .listening(let pending, _, let level) = dictation {
+            dictation = .listening(pending: pending, elapsedSeconds: seconds, level: level)
+        }
+    }
+
+    /// Splices confirmed text into `body` at the insertion point, with a space on either side
+    /// where it would otherwise run into a word, and moves the insertion point past it. Clears
+    /// the unconfirmed text it replaces.
+    mutating func insertFinal(_ text: String) {
+        guard let point = dictationInsertionPoint else {
+            return
+        }
+        setPending("")
+        let splice = DictationSpacing.splice(text, into: body, at: point)
+        guard !splice.inserted.isEmpty else {
+            return
+        }
+        body = splice.result
+        dictationInsertionPoint = splice.insertionPoint
+    }
+
+    /// The text to show while dictating: `body` with the unconfirmed text at the insertion
+    /// point.
+    var dictationDisplay: (before: String, pending: String, after: String) {
+        let point = min(dictationInsertionPoint ?? body.count, body.count)
+        let split = body.index(body.startIndex, offsetBy: point)
+        let pending = DictationSpacing.spaced(pendingDictation, in: body, at: point)
+        return (String(body[..<split]), pending, String(body[split...]))
+    }
+
+    /// The stop button was tapped: wait for the last words.
+    mutating func stopDictation() {
+        if case .listening(let pending, _, _) = dictation {
+            dictation = .finishing(pending: pending)
+        }
+    }
+
+    /// Back to editing. Anything still unconfirmed is dropped.
+    ///
+    /// - Returns: Where the cursor goes: just after the inserted text, as a character offset.
+    @discardableResult
+    mutating func endDictation() -> Int? {
+        let point = dictationInsertionPoint
+        dictationInsertionPoint = nil
+        dictation = .idle
+        return point.map { min($0, body.count) }
     }
 
     // MARK: Location
@@ -337,6 +504,68 @@ struct EntryDraft {
     }
 }
 
+/// How dictated text is spliced into the body so words don't run together.
+nonisolated enum DictationSpacing {
+    /// After these, no space is added before inserted text.
+    private static let openers: Set<Character> = ["(", "[", "{", "“", "‘"]
+    /// Before these, no space is added after inserted text; inserted text starting with one
+    /// gets no space before it.
+    private static let closers: Set<Character> = [
+        ".", ",", ";", ":", "!", "?", ")", "]", "}", "”", "’", "…", "%",
+    ]
+
+    struct Splice: Equatable {
+        var result: String
+        /// What was inserted, spaces included.
+        var inserted: String
+        /// Just after the inserted words (before any space added after them).
+        var insertionPoint: Int
+    }
+
+    /// Inserts `text`, trimmed of surrounding whitespace, into `body` at the character offset
+    /// `point`. A space is added before it unless it follows whitespace, an opening bracket or
+    /// quote, or the start, or itself starts with closing punctuation; and after it unless the
+    /// next character is whitespace or closing punctuation, or the end.
+    static func splice(_ text: String, into body: String, at point: Int) -> Splice {
+        let point = min(max(point, 0), body.count)
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty else {
+            return Splice(result: body, inserted: "", insertionPoint: point)
+        }
+        let index = body.index(body.startIndex, offsetBy: point)
+        let before = index > body.startIndex ? body[body.index(before: index)] : nil
+        let after = index < body.endIndex ? body[index] : nil
+        let leading = needsSpace(between: before, and: words.first)
+        let trailing = needsSpace(between: words.last, and: after)
+        let inserted = (leading ? " " : "") + words + (trailing ? " " : "")
+        var result = body
+        result.insert(contentsOf: inserted, at: index)
+        return Splice(
+            result: result,
+            inserted: inserted,
+            insertionPoint: point + (leading ? 1 : 0) + words.count
+        )
+    }
+
+    /// Unconfirmed text as it is displayed at `point`: trimmed, with a leading space when the
+    /// final text would get one.
+    static func spaced(_ pending: String, in body: String, at point: Int) -> String {
+        let words = pending.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty else {
+            return ""
+        }
+        let splice = splice(words, into: body, at: point)
+        return splice.inserted
+    }
+
+    private static func needsSpace(between left: Character?, and right: Character?) -> Bool {
+        guard let left, let right, !left.isWhitespace, !right.isWhitespace else {
+            return false
+        }
+        return !openers.contains(left) && !closers.contains(right)
+    }
+}
+
 extension EnvironmentValues {
     /// Downscales and thumbnails picked photos. Replaced with a fake in tests.
     @Entry var imageProcessor: any ImageProcessor = ImageIOProcessor()
@@ -363,6 +592,8 @@ struct EntryComposerView: View {
     @Environment(\.locationService) private var locationService
     @Environment(\.locationCapture) private var locationCapture
     @Environment(\.openURL) private var openURL
+    @Environment(\.transcriptionService) private var transcriptionService
+    @Environment(\.scenePhase) private var scenePhase
     /// A per-device preference, not synced. See `LastUsedTopic`.
     @AppStorage(LastUsedTopic.storageKey) private var lastUsedTopic: Data?
     @State private var draft: EntryDraft
@@ -381,6 +612,17 @@ struct EntryComposerView: View {
     @State private var captureID: UUID?
     @State private var captureStartedAt: ContinuousClock.Instant?
     @FocusState private var isBodyFocused: Bool
+    /// The editor's cursor or selection: where dictated text goes.
+    @State private var textSelection: TextSelection?
+    /// The dictation in progress, from the mic tap until it ends. Tied to the sheet, so
+    /// dismissing it stops listening.
+    @State private var dictationID: UUID?
+    /// The service the current dictation started on, so stop reaches the same one.
+    @State private var activeTranscription: (any TranscriptionService)?
+    /// Save was tapped while listening: save once the last words are in.
+    @State private var savesAfterDictation = false
+    @State private var dictationMessage: String?
+    @State private var isShowingMicrophoneDenied = false
 
     /// - Parameter draft: Overrides the draft derived from `mode`; previews use it to show a
     ///   specific state.
@@ -404,6 +646,8 @@ struct EntryComposerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
+                        // The unconfirmed tail is dropped; inserted finals are part of the draft.
+                        cancelDictation()
                         if isDirty {
                             isConfirmingDiscard = true
                         } else {
@@ -423,10 +667,15 @@ struct EntryComposerView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        save()
+                        if draft.isListening {
+                            finishDictation(thenSave: true)
+                        } else {
+                            cancelDictation()
+                            save()
+                        }
                     }
                     .buttonStyle(.glassProminent)
-                    .disabled(!draft.isValid || isProcessingPhotos)
+                    .disabled(!canSave)
                 }
             }
         }
@@ -448,6 +697,32 @@ struct EntryComposerView: View {
         }
         .task(id: captureID) {
             await captureLocation()
+        }
+        .task(id: dictationID) {
+            await runDictation()
+        }
+        .task(id: draft.isListening) {
+            await countDictationTime()
+        }
+        .task(id: draft.isFinishingDictation) {
+            await limitFinishing()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Interruptions keep everything finalized so far.
+            if phase != .active, draft.isListening {
+                finishDictation(thenSave: false)
+            }
+        }
+        .transientMessage($dictationMessage)
+        .alert("Microphone Access Is Off", isPresented: $isShowingMicrophoneDenied) {
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                Button("Open Settings") {
+                    openURL(url)
+                }
+            }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("To dictate entries, allow Commonplace to use the microphone in Settings.")
         }
         .onAppear {
             if isFromList, draft.topic == nil {
@@ -515,6 +790,17 @@ struct EntryComposerView: View {
 
     private var isDirty: Bool {
         draft.isDirty(comparedTo: original)
+    }
+
+    /// While listening, the words still being spoken count: Save stops and keeps them.
+    private var canSave: Bool {
+        guard !isProcessingPhotos, !savesAfterDictation else {
+            return false
+        }
+        if draft.isListening, draft.topic != nil, !draft.pendingDictation.isEmpty {
+            return true
+        }
+        return draft.isValid
     }
 
     private var isProcessingPhotos: Bool {
@@ -755,17 +1041,22 @@ struct EntryComposerView: View {
 
     private var textArea: some View {
         ZStack(alignment: .bottomTrailing) {
-            if case .listening(let pending, _) = draft.dictation {
-                // While listening, the confirmed text is followed by the grey unconfirmed tail.
+            if draft.isDictating {
+                // Editing is paused while listening: the grey unconfirmed text sits at the
+                // insertion point.
+                let display = draft.dictationDisplay
                 ScrollView {
-                    Text("\(draft.body)\(Text(pending).foregroundStyle(.secondary))")
-                        .lineSpacing(3)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 14)
+                    Text(
+                        "\(display.before)\(Text(display.pending).foregroundStyle(.secondary))\(display.after)"
+                    )
+                    .lineSpacing(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+                    .accessibilityLabel("Entry text")
                 }
             } else {
-                TextEditor(text: $draft.body)
+                TextEditor(text: $draft.body, selection: $textSelection)
                     .focused($isBodyFocused)
                     .lineSpacing(3)
                     .scrollContentBackground(.hidden)
@@ -780,16 +1071,16 @@ struct EntryComposerView: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// Toggles the visual state only: no audio is recorded in the shell.
     @ViewBuilder private var dictationControl: some View {
-        if case .listening(_, let elapsedSeconds) = draft.dictation {
+        switch draft.dictation {
+        case .listening(_, let elapsedSeconds, let level):
             Button {
-                draft.dictation = .idle
+                finishDictation(thenSave: false)
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "stop.fill")
                         .font(.caption)
-                    LevelMeter()
+                    LevelMeter(level: level)
                     Text(Duration.seconds(elapsedSeconds), format: .time(pattern: .minuteSecond))
                         .font(.subheadline.weight(.semibold))
                         .monospacedDigit()
@@ -798,15 +1089,224 @@ struct EntryComposerView: View {
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.capsule)
             .accessibilityLabel("Stop dictation")
-        } else {
+        case .finishing:
+            Button {
+            } label: {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.circle)
+            .disabled(true)
+            .accessibilityLabel("Finishing dictation")
+        case .preparing:
+            // Tapping again gives up.
+            Button {
+                cancelDictation()
+            } label: {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Cancel dictation")
+        case .downloading(let progress):
+            Button {
+                cancelDictation()
+            } label: {
+                HStack(spacing: 8) {
+                    ProgressView(value: progress)
+                        .frame(width: 60)
+                    Text(progress, format: .percent.precision(.fractionLength(0)))
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                }
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.capsule)
+            .accessibilityLabel("Downloading dictation")
+            .accessibilityValue(Text(progress, format: .percent.precision(.fractionLength(0))))
+            .accessibilityHint("Cancels the download")
+        case .idle, .unavailable:
             Button("Dictate", systemImage: "mic") {
-                isBodyFocused = false
-                draft.dictation = .sample
+                startDictation()
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
         }
+    }
+
+    // MARK: Dictation
+
+    private func startDictation() {
+        draft.dictation = .preparing
+        savesAfterDictation = false
+        dictationID = UUID()
+    }
+
+    /// Availability → permission → model → listening, then forwards events until the service
+    /// ends the stream. Cancelled (the sheet closed, Cancel, or a give-up tap), it stops the
+    /// service by abandoning the stream.
+    private func runDictation() async {
+        guard dictationID != nil else {
+            return
+        }
+        let service = transcriptionService
+        var availability = await service.availability()
+        if availability == .needsPermission {
+            let granted = await service.requestPermission()
+            availability = granted ? await service.availability() : .permissionDenied
+        }
+        guard !Task.isCancelled else {
+            return
+        }
+        draft.dictationChecked(availability)
+        if case .downloading = draft.dictation {
+            do {
+                for try await progress in service.installModel() {
+                    draft.downloadProgressed(progress)
+                }
+            } catch {
+                if !Task.isCancelled {
+                    dictationUnavailable(.needsNetwork)
+                }
+                return
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            // Installed: start, even if the inventory hasn't caught up yet.
+            draft.dictation = .preparing
+        }
+        if case .unavailable(let reason) = draft.dictation {
+            dictationUnavailable(reason)
+            return
+        }
+        guard draft.dictation == .preparing, !Task.isCancelled else {
+            return
+        }
+
+        let events: AsyncStream<TranscriptionEvent>
+        do {
+            events = try await service.start()
+        } catch {
+            dictationUnavailable(.failed)
+            return
+        }
+        guard !Task.isCancelled else {
+            return
+        }
+        activeTranscription = service
+        isBodyFocused = false
+        draft.beginDictation(at: insertionOffset)
+        AccessibilityNotification.Announcement("Listening").post()
+
+        for await event in events {
+            if case .ended = event {
+                break
+            }
+            draft.handle(event)
+        }
+        guard !Task.isCancelled else {
+            return
+        }
+        completeDictation()
+    }
+
+    /// The cursor, or the end of a selection, as a character offset into the body. `nil` when
+    /// the editor has never been focused, which appends.
+    private var insertionOffset: Int? {
+        guard let textSelection, case .selection(let range) = textSelection.indices else {
+            return nil
+        }
+        let body = draft.body
+        let index = min(max(range.upperBound, body.startIndex), body.endIndex)
+        return body.distance(from: body.startIndex, to: index)
+    }
+
+    /// Stop (or Save, or an interruption): the service finalizes and ends the stream, and
+    /// `runDictation` then completes. `limitFinishing` bounds the wait.
+    private func finishDictation(thenSave: Bool) {
+        guard draft.isListening else {
+            return
+        }
+        savesAfterDictation = thenSave
+        draft.stopDictation()
+        let service = activeTranscription
+        Task {
+            await service?.stop()
+        }
+    }
+
+    /// Back to the editor with the cursor after the inserted text, then the save that was
+    /// waiting, if any.
+    private func completeDictation() {
+        let cursor = draft.endDictation()
+        dictationID = nil
+        activeTranscription = nil
+        AccessibilityNotification.Announcement("Dictation stopped").post()
+        if savesAfterDictation {
+            savesAfterDictation = false
+            if draft.isValid {
+                save()
+                return
+            }
+        }
+        if let cursor {
+            let body = draft.body
+            textSelection = TextSelection(
+                insertionPoint: body.index(body.startIndex, offsetBy: cursor))
+        }
+        isBodyFocused = true
+    }
+
+    /// Stops without waiting for finals: the unconfirmed tail is dropped and everything
+    /// already inserted stays.
+    private func cancelDictation() {
+        guard draft.dictation != .idle else {
+            return
+        }
+        savesAfterDictation = false
+        dictationID = nil
+        activeTranscription = nil
+        draft.endDictation()
+    }
+
+    private func dictationUnavailable(_ reason: EntryDraft.DictationUnavailable) {
+        draft.endDictation()
+        dictationID = nil
+        if reason == .permissionDenied {
+            isShowingMicrophoneDenied = true
+        } else {
+            dictationMessage = reason.message
+        }
+    }
+
+    private func countDictationTime() async {
+        guard draft.isListening else {
+            return
+        }
+        let start = ContinuousClock.now
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else {
+                return
+            }
+            draft.setDictationElapsed(Int((ContinuousClock.now - start).components.seconds))
+        }
+    }
+
+    /// Waits about two seconds for the last finals after a stop, then gives up on them.
+    private func limitFinishing() async {
+        guard draft.isFinishingDictation else {
+            return
+        }
+        try? await Task.sleep(for: DictationRule.finishTimeout)
+        guard !Task.isCancelled, draft.isFinishingDictation else {
+            return
+        }
+        completeDictation()
     }
 
     // MARK: Photos
@@ -900,18 +1400,24 @@ private struct ComposerChip<Content: View>: View {
     }
 }
 
-/// Static bars standing in for a live input level.
+/// Bars that follow the input level, in the design's uneven shape.
 private struct LevelMeter: View {
-    private let heights: [CGFloat] = [6, 11, 16, 9, 18, 13, 7, 15, 20, 10, 14, 6, 12, 8]
+    /// 0…1.
+    let level: Float
+
+    private let shape: [CGFloat] = [
+        0.3, 0.55, 0.8, 0.45, 0.9, 0.65, 0.35, 0.75, 1, 0.5, 0.7, 0.3, 0.6, 0.4,
+    ]
 
     var body: some View {
         HStack(spacing: 2.5) {
-            ForEach(Array(heights.enumerated()), id: \.offset) { _, height in
+            ForEach(Array(shape.enumerated()), id: \.offset) { _, weight in
                 Capsule()
-                    .frame(width: 2.5, height: height)
+                    .frame(width: 2.5, height: 3 + 17 * weight * CGFloat(level))
             }
         }
         .frame(height: 20)
+        .animation(.linear(duration: 0.05), value: level)
         .accessibilityHidden(true)
     }
 }

@@ -25,11 +25,16 @@ enum PreviewContainer {
 }
 
 extension View {
-    /// Attaches the seeded container, the seed's fixed "now", and a fake location service, so
-    /// previews never ask for location access or geocode.
-    func sampleData(location: FakeLocationService = FakeLocationService()) -> some View {
+    /// Attaches the seeded container, the seed's fixed "now", and fake location and
+    /// transcription services, so previews never ask for location or microphone access,
+    /// geocode, or listen.
+    func sampleData(
+        location: FakeLocationService = FakeLocationService(),
+        transcription: FakeTranscriptionService = FakeTranscriptionService()
+    ) -> some View {
         modelContainer(PreviewContainer.shared)
             .environment(\.referenceDate, SampleData.now)
             .environment(\.locationService, location)
+            .environment(\.transcriptionService, transcription)
     }
 }

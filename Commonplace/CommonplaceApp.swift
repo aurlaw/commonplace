@@ -12,6 +12,7 @@ import SwiftUI
 struct CommonplaceApp: App {
     private let container: Result<ModelContainer, any Error>
     private let locationService: any LocationService
+    private let transcriptionService: any TranscriptionService
     /// `nil` in shell mode and under tests, where nothing should geocode or outlive a sheet.
     private let locationCapture: LocationCapture?
 
@@ -28,6 +29,8 @@ struct CommonplaceApp: App {
         }
         let usesRealStore = !Self.isRunningTests && !AppConfig.usesSampleData
         locationService = usesRealStore ? CoreLocationService() : FakeLocationService()
+        transcriptionService =
+            usesRealStore ? SpeechTranscriptionService() : FakeTranscriptionService()
         if usesRealStore, case .success(let container) = container {
             locationCapture = LocationCapture(
                 service: locationService, context: container.mainContext
@@ -45,6 +48,7 @@ struct CommonplaceApp: App {
                     .modelContainer(container)
                     .environment(\.referenceDate, Self.usesSampleData ? SampleData.now : nil)
                     .environment(\.locationService, locationService)
+                    .environment(\.transcriptionService, transcriptionService)
                     .environment(\.locationCapture, locationCapture)
             case .failure(let error):
                 ContainerErrorView(message: error.localizedDescription)
