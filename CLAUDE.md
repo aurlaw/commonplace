@@ -9,10 +9,10 @@ Phase briefs live in the Tech Obsidian vault under `commonplace/phases/`.
 - `Commonplace.xcodeproj` — Xcode project. **Never edit it** (including `project.pbxproj`)
 - `Commonplace/` — app sources
   - `Models/` — `SchemaV1` models and `TopicColor` (Foundation only, no SwiftUI)
-  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, `TranscriptionService` (with `AudioLevelMeter` and `DictationRule`), `EntrySearch`, `BiometricAuthenticator`, `AppLock`, `LinkMetadataService` (with `CachedLinkMetadataService`), and `TrashOperations` (with `TrashRetention`)
-  - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`, `FormattedBody`, `LinkPreviews`) and the pure `EntryTimeline`, search (`Search.swift`: `SearchableText`, `SearchQuery`, `SearchSnippet`, `SearchResults`), and Markdown helpers (`MarkdownBody`, `MarkdownEditing`)
+  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, `TranscriptionService` (with `AudioLevelMeter` and `DictationRule`), `EntrySearch`, `BiometricAuthenticator`, `AppLock`, `LinkMetadataService` (with `CachedLinkMetadataService`), `TextCleaner` (with `FoundationModelsCleaner`), and `TrashOperations` (with `TrashRetention`)
+  - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`, `FormattedBody`, `LinkPreviews`) and the pure `EntryTimeline`, search (`Search.swift`: `SearchableText`, `SearchQuery`, `SearchSnippet`, `SearchResults`), Markdown helpers (`MarkdownBody`, `MarkdownEditing`), and Clean Up helpers (`CleanUp.swift`: `CleanUpChunks`, `CleanUpCheck`, `CleanUpRunner`)
   - `Screens/` — one file per screen or sheet; `RootView` owns the navigation stack
-  - `SampleData/` — the seed, placeholder images, `PreviewContainer`, `FakeLocationService`, `FakeTranscriptionService`, `FakeBiometricAuthenticator`, and `FakeLinkMetadataService`
+  - `SampleData/` — the seed, placeholder images, `PreviewContainer`, `FakeLocationService`, `FakeTranscriptionService`, `FakeBiometricAuthenticator`, `FakeLinkMetadataService`, and `FakeTextCleaner`
 - `CommonplaceTests/` — unit tests (Swift Testing), hosted in the app
 - `CommonplaceUITests/` — UI tests; not run by `make test`
 - `docs/design/` — design reference exports
@@ -33,7 +33,7 @@ No device builds, signing or capability changes, git operations, or CloudKit Con
 
 ## Dependencies
 
-No third-party packages, including test helpers and formatters. Apple frameworks only: SwiftUI, SwiftData, PhotosUI, ImageIO, CoreImage, Speech, AVFoundation, CoreLocation, MapKit, LocalAuthentication, LinkPresentation (link previews only).
+No third-party packages, including test helpers and formatters. Apple frameworks only: SwiftUI, SwiftData, PhotosUI, ImageIO, CoreImage, Speech, AVFoundation, CoreLocation, MapKit, LocalAuthentication, LinkPresentation (link previews only), FoundationModels (Clean Up only, on-device `SystemLanguageModel`).
 
 ## Concurrency (Swift 6)
 
@@ -128,6 +128,18 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - **`LinkMetadataService`** (main-actor protocol, injected through `linkMetadataService`; one app-wide instance): `metadata(for:)` and `title(for:)`. `CachedLinkMetadataService` is the real one: **one `LPMetadataProvider` per fetch** (single-use), started on the main actor, 10 s timeout (`LinkPreviewRule.timeout`). Its completion handler runs on a background queue and **the fetched image files are deleted when it returns**, so it archives the metadata right there (`NSKeyedArchiver`, secure coding) and is built in a `nonisolated` helper so it isn't main-actor isolated. Archives go to `Caches/LinkMetadata/<FNV-1a hash>.archive`, with an in-memory copy; a missing file (evicted) is fetched again; a URL that failed isn't fetched again in the same session. Not synced, not in SwiftData. `FakeLinkMetadataService` (titles by URL, delay) is used by tests, previews, shell mode, and the hosted test run. The iOS 26.4 `LinkMetadata` type isn't used (the deployment target is iOS 26)
 - **Previews** (`LinkPreviews`): in entry detail below the body and photos, above the map; one per unique http(s) link in reading order, at most 3 (`LinkPreviewRule.maximumPerEntry`). Each fetches in a `.task` when its page is on screen, never in timelines or search. Loaded: `LPLinkView` in a `UIViewRepresentable` sized through `sizeThatFits` (it opens the link itself when tapped; **not verified on a device**). Loading, offline, or failed: a compact row (globe, host, URL) that opens the link
 
+### Clean Up
+
+- **Button only, never automatic** — not after dictation, not on save. The composer's Clean Up button (`wand.and.sparkles`) sits left of the mic; it is **absent** unless `TextCleaner.availability` is `.available` (read when the sheet appears) and disabled when the body is empty or dictation isn't idle
+- **On-device only:** `SystemLanguageModel.default`; no Private Cloud Compute, no other model, no network
+- **`TextCleaner`** (protocol, injected through `textCleaner`): `availability`, `clean(_:)` for one chunk, and `prewarm()`. `FoundationModelsCleaner` is the real one: a **fresh `LanguageModelSession` per chunk** with fixed instructions (`FoundationModelsCleaner.instructions` — tune them there), `GenerationOptions(samplingMode: .greedy)`. Availability reasons are read defensively with `@unknown default` and mapped to device not eligible, Apple Intelligence off, model downloading, or other, and logged. Errors are classified from iOS 26's `LanguageModelSession.GenerationError` and iOS 27's `LanguageModelError`: context overflow, refused (guardrail, refusal, unsupported language), or failed. On iOS 26.4+ a chunk over 1,000 tokens (`tokenCount(for:)`) is treated as an overflow before it is sent. `FakeTextCleaner` (scripted transform, availability, delay) is used by tests, previews, shell mode, and the hosted test run
+- **Prewarm** once per composer, only when Clean Up is likely: when dictation ends, or once the body passes 280 characters (`CleanUpRule.prewarmLength`)
+- **Chunking** (`CleanUpChunks`, pure): one chunk per paragraph or bullet list — runs of non-blank lines, split at blank lines and where bullets start or stop. Separators are the exact original text between chunks, so joining every piece reproduces the body exactly. A chunk over the budget (3,000 characters ≈ 1,000 tokens) splits at sentence boundaries (`enumerateSubstrings(options: .bySentences)`, ICU — which doesn't break before a lowercase word, so uncapitalized dictation falls through to the next rule), packing sentences up to the budget; one sentence over it splits at spaces. Chunks are cleaned in order
+- **Errors** (`CleanUpRunner`): a context overflow re-splits that chunk at half the size **once**, then gives up; refused or failed keeps the chunk unchanged. Any failure leaves only that chunk original
+- **Safety post-check** (`CleanUpCheck`, pure) before accepting a cleaned chunk: not empty; length 50–130% of the original; every link destination identical and in the same order (I11a parsing); the same number of `*`, `[`, and `]`; the same number of bullet lines. Anything failing keeps the original chunk
+- **Composer:** while cleaning, the editor is read-only and the button becomes a "Cleaning up…" capsule; tapping it, or the sheet's Cancel, stops and keeps the original; Save is disabled. When done the body is replaced in one step and the button becomes **Revert** (`arrow.uturn.backward`), which restores the original exactly, until the next edit (no partial revert), Save, or Cancel. Nothing changed (or every chunk rejected) → "No changes"; some chunks failed → "Some text couldn’t be cleaned up". Clean Up changes `body`, so the draft becomes dirty; Revert restores the previous dirty state. VoiceOver hears "Cleaned up" / "Reverted". The state lives on the draft (`EntryDraft.CleanUpState`: `beginCleanUp`, `finishCleanUp`, `cancelCleanUp`, `revertCleanUp`, `bodyDidChange`) and never makes it dirty by itself
+- The original is never stored after Save (no schema change). **Real model output is unverified until tried on a device with Apple Intelligence** `[NEEDS VERIFICATION]`
+
 ### Search
 
 - **Lives on the topics list only** (the bottom-toolbar `.searchable` field). With 2+ characters (`SearchQuery.minimumLength`, ignoring surrounding whitespace) `SearchResultsView` replaces the topic sections; fewer shows the normal list. Debounced 250 ms (`SearchRule.debounce`) in a `.task(id:)` keyed on the text and the navigation depth, so typing cancels a pending search (no stale results) and returning from a result reruns it (edits, moves, and trashing show)
@@ -187,7 +199,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
 
 - The seed now exists for previews (and the switch). `SampleData.seed(into:)` has a `precondition` that the container is in-memory with CloudKit disabled. Sample data must never reach the persistent container
-- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I11a: the photo viewer's Share button. Clean Up comes in I11b
+- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I11b: the photo viewer's Share button
 - Seed dates are fixed (September–October 2026) around `SampleData.now`, which previews pass as `referenceDate`
 - Seed photos are generated at seed time (`PlaceholderImage`); no image files are bundled or downloaded
 

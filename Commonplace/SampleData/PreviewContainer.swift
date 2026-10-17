@@ -47,7 +47,8 @@ extension View {
     func sampleData(
         location: FakeLocationService = FakeLocationService(),
         transcription: FakeTranscriptionService = FakeTranscriptionService(),
-        links: FakeLinkMetadataService = FakeLinkMetadataService()
+        links: FakeLinkMetadataService = FakeLinkMetadataService(),
+        cleaner: FakeTextCleaner = FakeTextCleaner()
     ) -> some View {
         modelContainer(PreviewContainer.shared)
             .environment(\.referenceDate, SampleData.now)
@@ -55,5 +56,6 @@ extension View {
             .environment(\.transcriptionService, transcription)
             .environment(PreviewContainer.appLock)
             .environment(\.linkMetadataService, links)
+            .environment(\.textCleaner, cleaner)
     }
 }

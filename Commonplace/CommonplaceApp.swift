@@ -15,6 +15,7 @@ struct CommonplaceApp: App {
     private let transcriptionService: any TranscriptionService
     /// One instance, so the session's cache and failed URLs are shared.
     private let linkMetadataService: any LinkMetadataService
+    private let textCleaner: any TextCleaner
     /// `nil` in shell mode and under tests, where nothing should geocode or outlive a sheet.
     private let locationCapture: LocationCapture?
     /// Under tests and in shell mode, a lock that can never engage, with its own settings.
@@ -45,6 +46,7 @@ struct CommonplaceApp: App {
         )
         linkMetadataService =
             usesRealStore ? CachedLinkMetadataService() : FakeLinkMetadataService()
+        textCleaner = usesRealStore ? FoundationModelsCleaner() : FakeTextCleaner()
         if usesRealStore, case .success(let container) = container {
             locationCapture = LocationCapture(
                 service: locationService, context: container.mainContext
@@ -64,6 +66,7 @@ struct CommonplaceApp: App {
                     .environment(\.locationService, locationService)
                     .environment(\.transcriptionService, transcriptionService)
                     .environment(\.linkMetadataService, linkMetadataService)
+                    .environment(\.textCleaner, textCleaner)
                     .environment(\.locationCapture, locationCapture)
                     .appLock(appLock)
             case .failure(let error):

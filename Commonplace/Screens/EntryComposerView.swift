@@ -55,6 +55,9 @@ struct EntryDraft {
     /// In display order. Add with `addPhoto(_:)`, which enforces the per-entry limit.
     var photos: [DraftPhoto] = []
     var dictation = Dictation.idle
+    /// Clean Up's state. Like dictation, it never makes the draft dirty; the text it changes
+    /// does.
+    private(set) var cleanUp = CleanUpState.idle
     /// Whether this entry should carry a location. Starts from the topic's setting for a new
     /// entry and from whether the entry has one for an edit. Change it with
     /// `setCapturesLocation(_:)`.
@@ -196,6 +199,77 @@ struct EntryDraft {
             || photos.map(\.id) != original.photos.map(\.id)
             || capturesLocation != original.capturesLocation
             || (isEditing && hasNewLocation)
+    }
+
+    // MARK: Clean Up
+
+    enum CleanUpState: Equatable {
+        case idle
+        /// The editor is read-only until the cleaned text arrives or Clean Up is cancelled.
+        case cleaning
+        /// The body was replaced; Revert restores `original` until the next edit, Save, or
+        /// Cancel.
+        case cleaned(original: String, cleaned: String)
+    }
+
+    var isCleaning: Bool {
+        cleanUp == .cleaning
+    }
+
+    var canRevertCleanUp: Bool {
+        if case .cleaned = cleanUp { true } else { false }
+    }
+
+    /// Clean Up needs text, and not while dictating.
+    var canCleanUp: Bool {
+        cleanUp == .idle && dictation == .idle && !trimmedBody.isEmpty
+    }
+
+    /// - Returns: Whether cleaning started.
+    @discardableResult
+    mutating func beginCleanUp() -> Bool {
+        guard canCleanUp else {
+            return false
+        }
+        cleanUp = .cleaning
+        return true
+    }
+
+    /// Applies a finished clean-up. Unchanged text leaves the body alone.
+    mutating func finishCleanUp(_ outcome: CleanUpOutcome) {
+        guard isCleaning else {
+            return
+        }
+        guard outcome.changed, outcome.text != body else {
+            cleanUp = .idle
+            return
+        }
+        cleanUp = .cleaned(original: body, cleaned: outcome.text)
+        body = outcome.text
+    }
+
+    /// Stops cleaning and keeps the original.
+    mutating func cancelCleanUp() {
+        if isCleaning {
+            cleanUp = .idle
+        }
+    }
+
+    /// Restores the text from before Clean Up exactly.
+    mutating func revertCleanUp() {
+        guard case .cleaned(let original, _) = cleanUp else {
+            return
+        }
+        body = original
+        cleanUp = .idle
+    }
+
+    /// Call after any change to the body. Editing the cleaned text keeps it and retires
+    /// Revert; there is no partial revert.
+    mutating func bodyDidChange() {
+        if case .cleaned(_, let cleaned) = cleanUp, body != cleaned {
+            cleanUp = .idle
+        }
     }
 
     // MARK: Dictation
@@ -621,10 +695,16 @@ struct EntryComposerView: View {
     @State private var activeTranscription: (any TranscriptionService)?
     /// Save was tapped while listening: save once the last words are in.
     @State private var savesAfterDictation = false
-    @State private var dictationMessage: String?
+    @State private var composerMessage: String?
     @State private var isShowingMicrophoneDenied = false
     /// The selection the Link sheet replaces, captured when it opens.
     @State private var linkSelection: Range<Int>?
+    @Environment(\.textCleaner) private var textCleaner
+    /// Read when the sheet appears; the button is absent when the model isn't available.
+    @State private var isCleanUpAvailable = false
+    /// The clean-up in progress. Tied to the sheet, so dismissing it stops the work.
+    @State private var cleanUpID: UUID?
+    @State private var hasPrewarmedCleanUp = false
 
     /// - Parameter draft: Overrides the draft derived from `mode`; previews use it to show a
     ///   specific state.
@@ -650,6 +730,8 @@ struct EntryComposerView: View {
                     Button("Cancel") {
                         // The unconfirmed tail is dropped; inserted finals are part of the draft.
                         cancelDictation()
+                        // A clean-up in progress stops; the original is kept.
+                        cancelCleanUp()
                         if isDirty {
                             isConfirmingDiscard = true
                         } else {
@@ -718,9 +800,22 @@ struct EntryComposerView: View {
                 finishDictation(thenSave: false)
             }
         }
-        .transientMessage($dictationMessage)
+        .transientMessage($composerMessage)
         .onChange(of: draft.body) { old, new in
+            draft.bodyDidChange()
             continueList(from: old, to: new)
+            if new.count > CleanUpRule.prewarmLength {
+                prewarmCleanUp()
+            }
+        }
+        .onChange(of: draft.dictation) { old, new in
+            // Dictated text is the likeliest to be cleaned up.
+            if new == .idle, old != .idle {
+                prewarmCleanUp()
+            }
+        }
+        .task(id: cleanUpID) {
+            await runCleanUp()
         }
         .sheet(
             isPresented: Binding(
@@ -741,6 +836,7 @@ struct EntryComposerView: View {
             Text("To dictate entries, allow Commonplace to use the microphone in Settings.")
         }
         .onAppear {
+            isCleanUpAvailable = textCleaner.availability == .available
             if isFromList, draft.topic == nil {
                 // The default topic is where the sheet starts, not a change to it.
                 let topic = LastUsedTopic.resolve(stored: lastUsedTopic, among: topics)
@@ -810,7 +906,7 @@ struct EntryComposerView: View {
 
     /// While listening, the words still being spoken count: Save stops and keeps them.
     private var canSave: Bool {
-        guard !isProcessingPhotos, !savesAfterDictation else {
+        guard !isProcessingPhotos, !savesAfterDictation, !draft.isCleaning else {
             return false
         }
         if draft.isListening, draft.topic != nil, !draft.pendingDictation.isEmpty {
@@ -1057,9 +1153,9 @@ struct EntryComposerView: View {
 
     private var textArea: some View {
         ZStack(alignment: .bottomTrailing) {
-            if draft.isDictating {
-                // Editing is paused while listening: the grey unconfirmed text sits at the
-                // insertion point.
+            if draft.isDictating || draft.isCleaning {
+                // Editing is paused while listening or cleaning up: the grey unconfirmed text
+                // sits at the insertion point.
                 let display = draft.dictationDisplay
                 ScrollView {
                     Text(
@@ -1080,9 +1176,12 @@ struct EntryComposerView: View {
                     .padding(.top, 6)
                     .accessibilityLabel("Entry text")
             }
-            dictationControl
-                .padding(.trailing, 16)
-                .padding(.bottom, 8)
+            HStack(spacing: 8) {
+                cleanUpControl
+                dictationControl
+            }
+            .padding(.trailing, 16)
+            .padding(.bottom, 8)
         }
         .frame(maxHeight: .infinity)
     }
@@ -1150,7 +1249,93 @@ struct EntryComposerView: View {
             .labelStyle(.iconOnly)
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
+            .disabled(draft.isCleaning)
         }
+    }
+
+    // MARK: Clean Up
+
+    /// Clean Up, its progress (tap to cancel), or Revert. Absent when the on-device model
+    /// isn't available. Only ever run from this button.
+    @ViewBuilder private var cleanUpControl: some View {
+        if isCleanUpAvailable {
+            switch draft.cleanUp {
+            case .idle:
+                Button("Clean Up", systemImage: "wand.and.sparkles") {
+                    startCleanUp()
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .disabled(!draft.canCleanUp)
+            case .cleaning:
+                Button {
+                    cancelCleanUp()
+                } label: {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Cleaning up…")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
+                .accessibilityLabel("Cleaning up")
+                .accessibilityHint("Cancels Clean Up and keeps the original")
+            case .cleaned:
+                Button("Revert", systemImage: "arrow.uturn.backward") {
+                    draft.revertCleanUp()
+                    AccessibilityNotification.Announcement("Reverted").post()
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+            }
+        }
+    }
+
+    private func startCleanUp() {
+        guard draft.beginCleanUp() else {
+            return
+        }
+        isBodyFocused = false
+        cleanUpID = UUID()
+    }
+
+    /// Cleans chunk by chunk, then replaces the body in one step.
+    private func runCleanUp() async {
+        guard cleanUpID != nil, draft.isCleaning else {
+            return
+        }
+        let outcome = await CleanUpRunner.run(draft.body, with: textCleaner)
+        guard !Task.isCancelled, draft.isCleaning else {
+            return
+        }
+        draft.finishCleanUp(outcome)
+        cleanUpID = nil
+        if let message = outcome.message {
+            composerMessage = message
+        } else {
+            AccessibilityNotification.Announcement("Cleaned up").post()
+        }
+    }
+
+    private func cancelCleanUp() {
+        guard draft.isCleaning else {
+            return
+        }
+        cleanUpID = nil
+        draft.cancelCleanUp()
+    }
+
+    /// Loads the model once, when Clean Up is likely: after dictating, or for a longer entry.
+    private func prewarmCleanUp() {
+        guard isCleanUpAvailable, !hasPrewarmedCleanUp else {
+            return
+        }
+        hasPrewarmedCleanUp = true
+        textCleaner.prewarm()
     }
 
     // MARK: Dictation
@@ -1263,7 +1448,7 @@ struct EntryComposerView: View {
     }
 
     private func applyFormatting(_ operation: (String, Range<Int>) -> MarkdownEditing.Edit) {
-        guard !draft.isDictating else {
+        guard !draft.isDictating, !draft.isCleaning else {
             return
         }
         apply(operation(draft.body, selectionOffsets))
@@ -1282,7 +1467,9 @@ struct EntryComposerView: View {
 
     /// Return in a bulleted line continues the list; Return on an empty bullet ends it.
     private func continueList(from old: String, to new: String) {
-        guard !draft.isDictating, let result = MarkdownEditing.continueList(from: old, to: new)
+        // While Revert is still offered, the change came from Clean Up itself.
+        guard !draft.isDictating, !draft.isCleaning, !draft.canRevertCleanUp,
+            let result = MarkdownEditing.continueList(from: old, to: new)
         else {
             return
         }
@@ -1372,7 +1559,7 @@ struct EntryComposerView: View {
         if reason == .permissionDenied {
             isShowingMicrophoneDenied = true
         } else {
-            dictationMessage = reason.message
+            composerMessage = reason.message
         }
     }
 
