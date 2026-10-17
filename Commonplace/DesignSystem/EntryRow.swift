@@ -25,7 +25,7 @@ struct EntryRow: View {
                 Text(EntryTimeline.time(entry.date))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Text(entry.body)
+                Text(SearchableText.plain(entry.body))
                     .font(.subheadline)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)

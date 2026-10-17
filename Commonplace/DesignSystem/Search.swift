@@ -1,11 +1,10 @@
 import Foundation
 
-/// The one place entry text becomes searchable plain text. Search matching and snippets both
-/// go through it. For now the body is returned as-is; I11 will strip Markdown here so
-/// formatting characters are ignored.
+/// The one place entry text becomes plain text: search matching and snippets, timeline and
+/// Trash rows. Markdown syntax is stripped, link text kept, and bullets flattened to lines.
 nonisolated enum SearchableText {
     static func plain(_ body: String) -> String {
-        body
+        MarkdownBody.plainText(body)
     }
 }
 

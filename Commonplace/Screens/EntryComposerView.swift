@@ -623,6 +623,8 @@ struct EntryComposerView: View {
     @State private var savesAfterDictation = false
     @State private var dictationMessage: String?
     @State private var isShowingMicrophoneDenied = false
+    /// The selection the Link sheet replaces, captured when it opens.
+    @State private var linkSelection: Range<Int>?
 
     /// - Parameter draft: Overrides the draft derived from `mode`; previews use it to show a
     ///   specific state.
@@ -677,6 +679,9 @@ struct EntryComposerView: View {
                     .buttonStyle(.glassProminent)
                     .disabled(!canSave)
                 }
+                ToolbarItemGroup(placement: .keyboard) {
+                    formattingBar
+                }
             }
         }
         // With unsaved changes, swipe-down is blocked so Cancel's confirmation is the way out.
@@ -714,6 +719,17 @@ struct EntryComposerView: View {
             }
         }
         .transientMessage($dictationMessage)
+        .onChange(of: draft.body) { old, new in
+            continueList(from: old, to: new)
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { linkSelection != nil },
+                set: { if !$0 { linkSelection = nil } }
+            )
+        ) {
+            LinkSheet(selectedText: linkSelectedText, onInsert: insertLink)
+        }
         .alert("Microphone Access Is Off", isPresented: $isShowingMicrophoneDenied) {
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 Button("Open Settings") {
@@ -1212,6 +1228,83 @@ struct EntryComposerView: View {
             return
         }
         completeDictation()
+    }
+
+    // MARK: Formatting
+
+    /// Bold, Italic, Bullet List, and Link over the keyboard. They edit the Markdown in the
+    /// body through the editor's selection.
+    @ViewBuilder private var formattingBar: some View {
+        Button("Bold", systemImage: "bold") {
+            applyFormatting { MarkdownEditing.toggle(.bold, in: $0, selection: $1) }
+        }
+        Button("Italic", systemImage: "italic") {
+            applyFormatting { MarkdownEditing.toggle(.italic, in: $0, selection: $1) }
+        }
+        Button("Bullet List", systemImage: "list.bullet") {
+            applyFormatting { MarkdownEditing.toggleBullets(in: $0, selection: $1) }
+        }
+        Button("Link", systemImage: "link") {
+            linkSelection = selectionOffsets
+        }
+        Spacer()
+    }
+
+    /// The selection as character offsets; the end of the body when the editor has none.
+    private var selectionOffsets: Range<Int> {
+        let body = draft.body
+        guard let textSelection, case .selection(let range) = textSelection.indices else {
+            return body.count..<body.count
+        }
+        let lower = min(max(range.lowerBound, body.startIndex), body.endIndex)
+        let upper = min(max(range.upperBound, lower), body.endIndex)
+        return body.distance(
+            from: body.startIndex, to: lower)..<body.distance(from: body.startIndex, to: upper)
+    }
+
+    private func applyFormatting(_ operation: (String, Range<Int>) -> MarkdownEditing.Edit) {
+        guard !draft.isDictating else {
+            return
+        }
+        apply(operation(draft.body, selectionOffsets))
+    }
+
+    /// Writes an edit to the body and moves the editor's selection to match.
+    private func apply(_ edit: MarkdownEditing.Edit) {
+        draft.body = edit.text
+        let body = draft.body
+        let lower = body.index(
+            body.startIndex, offsetBy: min(edit.selection.lowerBound, body.count))
+        let upper = body.index(
+            body.startIndex, offsetBy: min(edit.selection.upperBound, body.count))
+        textSelection = TextSelection(range: lower..<upper)
+    }
+
+    /// Return in a bulleted line continues the list; Return on an empty bullet ends it.
+    private func continueList(from old: String, to new: String) {
+        guard !draft.isDictating, let result = MarkdownEditing.continueList(from: old, to: new)
+        else {
+            return
+        }
+        apply(MarkdownEditing.Edit(text: result.text, selection: result.cursor..<result.cursor))
+    }
+
+    private var linkSelectedText: String {
+        guard let linkSelection else {
+            return ""
+        }
+        let body = draft.body
+        let lower = min(linkSelection.lowerBound, body.count)
+        let upper = min(linkSelection.upperBound, body.count)
+        return String(Array(body)[lower..<upper])
+    }
+
+    private func insertLink(text: String, url: URL) {
+        let selection = linkSelection ?? (draft.body.count..<draft.body.count)
+        linkSelection = nil
+        apply(
+            MarkdownEditing.insertLink(text: text, url: url, in: draft.body, selection: selection))
+        isBodyFocused = true
     }
 
     /// The cursor, or the end of a selection, as a character offset into the body. `nil` when

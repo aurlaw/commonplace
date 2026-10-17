@@ -13,6 +13,8 @@ struct CommonplaceApp: App {
     private let container: Result<ModelContainer, any Error>
     private let locationService: any LocationService
     private let transcriptionService: any TranscriptionService
+    /// One instance, so the session's cache and failed URLs are shared.
+    private let linkMetadataService: any LinkMetadataService
     /// `nil` in shell mode and under tests, where nothing should geocode or outlive a sheet.
     private let locationCapture: LocationCapture?
     /// Under tests and in shell mode, a lock that can never engage, with its own settings.
@@ -41,6 +43,8 @@ struct CommonplaceApp: App {
                     authenticator: FakeBiometricAuthenticator(availability: .unavailable)
                 )
         )
+        linkMetadataService =
+            usesRealStore ? CachedLinkMetadataService() : FakeLinkMetadataService()
         if usesRealStore, case .success(let container) = container {
             locationCapture = LocationCapture(
                 service: locationService, context: container.mainContext
@@ -59,6 +63,7 @@ struct CommonplaceApp: App {
                     .environment(\.referenceDate, Self.usesSampleData ? SampleData.now : nil)
                     .environment(\.locationService, locationService)
                     .environment(\.transcriptionService, transcriptionService)
+                    .environment(\.linkMetadataService, linkMetadataService)
                     .environment(\.locationCapture, locationCapture)
                     .appLock(appLock)
             case .failure(let error):

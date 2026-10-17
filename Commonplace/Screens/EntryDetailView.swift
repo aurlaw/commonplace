@@ -318,11 +318,12 @@ private struct EntryPage: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                Text(entry.body)
-                    .lineSpacing(3)
+                FormattedBody(entry.body)
                 if !entry.sortedPhotos.isEmpty {
                     PhotoGrid(photos: entry.sortedPhotos, onSelect: onSelectPhoto)
                 }
+                // Fetched when this page comes on screen; paging is lazy.
+                LinkPreviews(body: entry.body)
                 if entry.hasLocation {
                     EntryLocationView(entry: entry)
                 }

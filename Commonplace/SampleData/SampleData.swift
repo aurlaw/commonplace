@@ -131,7 +131,10 @@ private struct Seeder {
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 10, 3, 19, 24),
-            "Elote Cafe. Get the fire-roasted corn. 50-minute wait, worth it.",
+            """
+            [Elote Cafe](https://elotecafe.com). Get the **fire-roasted corn**. 50-minute wait, \
+            *worth it*.
+            """,
             place: Place(34.8623, -111.7629, "Sedona, AZ")
         )
         addEntry(
@@ -155,7 +158,11 @@ private struct Seeder {
             the saddle for twenty minutes while the sun hit Courthouse Butte first, then the \
             whole valley went orange at once.
 
-            Next time: gloves for the slickrock, and a weekday.
+            Next time:
+            - gloves for the slickrock
+            - a **weekday**
+
+            Trail info: https://www.fs.usda.gov/recarea/coconino/recarea/?recid=55291
             """,
             photos: 6,
             place: Place(34.8253, -111.7885, "Cathedral Rock Trailhead")

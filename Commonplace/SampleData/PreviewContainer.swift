@@ -46,12 +46,14 @@ extension View {
     /// geocode, or listen.
     func sampleData(
         location: FakeLocationService = FakeLocationService(),
-        transcription: FakeTranscriptionService = FakeTranscriptionService()
+        transcription: FakeTranscriptionService = FakeTranscriptionService(),
+        links: FakeLinkMetadataService = FakeLinkMetadataService()
     ) -> some View {
         modelContainer(PreviewContainer.shared)
             .environment(\.referenceDate, SampleData.now)
             .environment(\.locationService, location)
             .environment(\.transcriptionService, transcription)
             .environment(PreviewContainer.appLock)
+            .environment(\.linkMetadataService, links)
     }
 }

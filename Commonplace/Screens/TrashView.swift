@@ -200,7 +200,7 @@ struct TrashView: View {
                 }
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                Text(entry.body)
+                Text(SearchableText.plain(entry.body))
                     .font(.subheadline)
                     .lineLimit(2)
                 TrashActions {

@@ -251,7 +251,7 @@ struct SearchFetchTests {
     }
 
     private func bodies(_ text: String) throws -> [String] {
-        try search(text).entries.map { String($0.body.prefix(20)) }
+        try search(text).entries.map { String(SearchableText.plain($0.body).prefix(20)) }
     }
 
     @Test func placeNameOnlyMatchesAreFound() throws {
@@ -269,7 +269,10 @@ struct SearchFetchTests {
     @Test func topicTitleAndPlaceNamesTogether() throws {
         let found = try search("sedona")
         #expect(found.topics.map(\.title) == ["Sedona trip"])
-        #expect(found.entries.map { String($0.body.prefix(5)) } == ["Elote", "Arriv"])
+        #expect(
+            found.entries.map { String(SearchableText.plain($0.body).prefix(5)) } == [
+                "Elote", "Arriv",
+            ])
     }
 
     @Test func trashedEntriesAndTrashedTopicsNeverAppear() throws {

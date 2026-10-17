@@ -73,12 +73,17 @@ struct SampleDataTests {
         )
     }
 
-    @Test func sedonaCathedralRockEntryHasThreeParagraphs() throws {
+    @Test func sedonaCathedralRockEntryHasParagraphsAListAndALink() throws {
         let sedona = try #require(topic("Sedona trip"))
         let entry = try #require(sedona.liveEntries.first { $0.sortedPhotos.count == 6 })
 
         #expect(entry.date == SampleData.date(2026, 10, 2, 6, 10))
-        #expect(entry.body.components(separatedBy: "\n\n").count == 3)
+        #expect(entry.body.components(separatedBy: "\n\n").count == 4)
+        #expect(
+            MarkdownBody.blocks(entry.body).contains {
+                if case .bulletList = $0 { true } else { false }
+            })
+        #expect(MarkdownBody.links(in: entry.body).count == 1)
         #expect(entry.body.hasPrefix("Cathedral Rock at first light."))
     }
 
