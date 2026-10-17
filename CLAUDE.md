@@ -9,8 +9,8 @@ Phase briefs live in the Tech Obsidian vault under `commonplace/phases/`.
 - `Commonplace.xcodeproj` — Xcode project. **Never edit it** (including `project.pbxproj`)
 - `Commonplace/` — app sources
   - `Models/` — `SchemaV1` models and `TopicColor` (Foundation only, no SwiftUI)
-  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, `TranscriptionService` (with `AudioLevelMeter` and `DictationRule`), and `TrashOperations` (with `TrashRetention`)
-  - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`) and the pure `EntryTimeline` helpers
+  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, `TranscriptionService` (with `AudioLevelMeter` and `DictationRule`), `EntrySearch`, and `TrashOperations` (with `TrashRetention`)
+  - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`) and the pure `EntryTimeline` and search helpers (`Search.swift`: `SearchableText`, `SearchQuery`, `SearchSnippet`, `SearchResults`)
   - `Screens/` — one file per screen or sheet; `RootView` owns the navigation stack
   - `SampleData/` — the seed, placeholder images, `PreviewContainer`, `FakeLocationService`, and `FakeTranscriptionService`
 - `CommonplaceTests/` — unit tests (Swift Testing), hosted in the app
@@ -114,6 +114,18 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - **Save while listening** stops, waits the same way, then saves if the draft is valid (Save is enabled while listening when there's a topic and pending words). **Cancel while listening** drops the pending tail at once; inserted finals are already in the draft, so the usual discard prompt applies. Dictation state never makes a draft dirty; inserted finals do
 - VoiceOver: the mic is "Dictate"; starting announces "Listening", ending announces "Dictation stopped"; volatile updates aren't announced
 
+### Search
+
+- **Lives on the topics list only** (the bottom-toolbar `.searchable` field). With 2+ characters (`SearchQuery.minimumLength`, ignoring surrounding whitespace) `SearchResultsView` replaces the topic sections; fewer shows the normal list. Debounced 250 ms (`SearchRule.debounce`) in a `.task(id:)` keyed on the text and the navigation depth, so typing cancels a pending search (no stale results) and returning from a result reruns it (edits, moves, and trashing show)
+- **Scope:** entry text, entry place name, and topic titles. Not photos, dates, or topic summaries. **Live entries only** (`Entry.isLive`); archived topics and their entries are included and marked "Archived". Trashed topics never match
+- **Matching** (`SearchQuery`): the query is split on whitespace, each word trimmed of surrounding punctuation and symbols, and punctuation-only words dropped. **Every word must match**, in any order, in the text or the place name (one word can match each). Case- and diacritic-insensitive via `localizedStandardContains` ("cafe" finds "Café"). No fuzzy matching; a straight apostrophe doesn't match a curly one
+- **Searchable plain text:** matching and snippets read the body only through `SearchableText.plain(_:)`. It returns the body as-is today; **I11 changes it to strip Markdown** so formatting characters are ignored
+- **Order and cap** (`SearchResults`): topics by recent activity, then entries newest first by `date` (ties by `createdAt`), at most 100 (`SearchResults.entryLimit`) with a "Showing the 100 most recent matches" footer
+- **Fetching** (`EntrySearch`): live topics are fetched whole; entries are narrowed in the store by the **first** word, `deletedAt == nil && (body.localizedStandardContains(word) || placeName?.localizedStandardContains(word) == true)`, then `SearchResults` applies `isLive`, every word, order, and the cap in memory. It runs on the main context after the debounce. **SwiftData predicate finding** (iOS 27 simulator): `localizedStandardContains` is supported, including diacritic-insensitive matching, but `(placeName ?? "").localizedStandardContains(…)` throws an Objective-C exception at fetch time that crashes the app; optional chaining compared with `== true` works. `SearchFetchTests` runs this predicate against a seeded store
+- **Snippets** (`SearchSnippet`): one line of text (whitespace runs collapsed), from up to 40 characters before the first match (starting at a word, "…" when cut) to about 140 characters (ending at a word, "…" when cut), with every match range for bold highlighting. When the match is only in the place name the snippet is the start of the text; the place name is shown, highlighted, whenever a word matches it
+- **Opening a result pushes the topic and then the entry** onto the path (`path.append(topic)`, `path.append(entry)`); a topic result pushes the topic. Back from the entry goes to the topic, and Back again to the results with the query intact. Result rows check `isAvailable` before reading their model
+- Rows read "Topic, date, [Archived,] snippet[, place]" to VoiceOver; the result counts are announced when they change after the debounce. Empty results show `ContentUnavailableView.search(text:)`
+
 ### Location
 
 - **`LocationService`** (protocol, injected through the `locationService` environment value) gives a one-shot fix and a place name. `CoreLocationService` is the real one; `FakeLocationService` (fixed coordinate, configurable delay, denied / unavailable, offline geocoding) is used by tests, previews, shell mode, and the hosted test run. `.sampleData()` injects the fake, so previews never ask for access or geocode
@@ -136,7 +148,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - Pages are a horizontal `ScrollView` + `LazyHStack` with `.scrollTargetBehavior(.paging)` and a `ScrollPosition` created with `idType: PersistentIdentifier.self`
 - **Only a scroll moves the reader.** `current` is updated from the scroll position while a scroll is in progress or settles. When the entry list changes underneath (a re-dated edit, an import, a trashed entry), `keepPlace()` scrolls back to `current` without animation; if `current` is no longer live it moves to `EntryTimeline.replacement(for:in:)` (newer neighbor, else older), or pops to the topic when none remain. Trashing or deleting the current entry from the ••• menu takes the same path
 - Neighbor buttons are the accessible way to page; a page change posts an accessibility announcement of the position ("3 of 6"), and the animated scroll is skipped with Reduce Motion
-- The topic chip uses `dismiss()`, which is right only while entry detail is pushed from a topic. Search results (I9) will push it from the topics list and must decide how the chip behaves there
+- The topic chip uses `dismiss()`, which is right because entry detail is always pushed on top of its topic: search results push the topic and then the entry (see Search)
 - **Back gesture vs. paging — not yet verified on a device.** iOS 26 added a content-area back swipe in navigation stacks, which can compete with horizontal paging. Required: a mid-topic horizontal swipe pages, and the leading-edge back gesture still pops. Only supported SwiftUI APIs are used and the system back gesture is not disabled. Record the observed behavior here once checked
 
 ### Shell mode — off
@@ -144,7 +156,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
 
 - The seed now exists for previews (and the switch). `SampleData.seed(into:)` has a `precondition` that the container is in-memory with CloudKit disabled. Sample data must never reach the persistent container
-- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I8: search and the photo viewer's Share button
+- Parts of the app that are still inert must not call `modelContext.insert` / `delete` / `save`. Still inert after I9: the photo viewer's Share button
 - Seed dates are fixed (September–October 2026) around `SampleData.now`, which previews pass as `referenceDate`
 - Seed photos are generated at seed time (`PlaceholderImage`); no image files are bundled or downloaded
 
@@ -192,7 +204,7 @@ Once the schema is deployed to the CloudKit production environment, only additiv
 - **Every permanent delete is confirmed** with accurate counts. A topic's count is every entry the delete removes, including ones already in Trash (`TrashOperations.entriesDeleted(with:)`). Entries share one alert, `.deleteEntryAlert(_:delete:)`
 - **Trashing a topic stamps only the topic.** Its entries keep their own `deletedAt`. Restoring the topic brings back the entries that were live, not ones trashed individually, and keeps its archived state
 - **Restoring an entry whose topic is in Trash restores the topic too**, after a confirmation that names it ("Restore Both"). `TrashOperations.restore(_ entry:)` does both; the view asks first
-- **Live means live all the way up.** An entry is shown outside Trash only if it isn't trashed and its topic isn't trashed: `Entry.isLive`. `Topic.liveEntries` is the narrower "not individually trashed" list a topic shows and brings back when restored. Topic lists query `deletedAt == nil`. **Search must filter with `Entry.isLive`**
+- **Live means live all the way up.** An entry is shown outside Trash only if it isn't trashed and its topic isn't trashed: `Entry.isLive`. `Topic.liveEntries` is the narrower "not individually trashed" list a topic shows and brings back when restored. Topic lists query `deletedAt == nil`. **Search filters with `Entry.isLive`**
 - **Retention** (`TrashRetention`: 30 days by default, 90 days, or Never) is a per-device preference in `@AppStorage(TrashRetention.storageKey)`, not synced, so in practice the shortest setting among devices wins. Shortening it asks first when that would delete items now
 - **Auto-purge** runs from `RootView` when the app becomes active, at most once a day (`TrashRetention.lastPurgeKey`), and deletes items trashed at or before `cutoff(before:)`. Failures are logged, not shown
 - **The clock is injected:** `TrashOperations.now` is a closure, replaced in tests to control time

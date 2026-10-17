@@ -19,35 +19,31 @@ struct TopicsListView: View {
     @AppStorage("topicSort") private var storedSort = TopicSort.recentActivity.rawValue
     @State private var saveError: String?
     @State private var searchText = ""
+    /// Results for the debounced query; `nil` under two characters, which shows the list.
+    @State private var searchResults: SearchResults?
     @State private var isArchivedExpanded = false
     @State private var composerMode: ComposerMode?
     @State private var topicEditorMode: TopicEditorMode?
 
     var body: some View {
-        List {
-            Section {
-                if sections.live.isEmpty {
-                    emptyState
-                }
-                ForEach(sections.live) { topic in
-                    topicLink(topic)
-                }
-            }
-            if !sections.archived.isEmpty {
-                Section {
-                    if isArchivedExpanded {
-                        ForEach(sections.archived) { topic in
-                            topicLink(topic)
-                        }
-                    }
-                } header: {
-                    archivedHeader
-                }
+        Group {
+            if let searchResults {
+                SearchResultsView(
+                    results: searchResults,
+                    query: SearchQuery(searchText),
+                    searchText: searchText,
+                    open: openSearchResult
+                )
+            } else {
+                topicList
             }
         }
-        .listStyle(.insetGrouped)
         .navigationTitle("Commonplace")
         .searchable(text: $searchText, prompt: "Search all entries")
+        // Rerun when returning from a result, so edits, moves, and trashing show.
+        .task(id: SearchKey(text: searchText, depth: path.count)) {
+            await search()
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button("New Topic", systemImage: "rectangle.stack.badge.plus") {
@@ -79,6 +75,75 @@ struct TopicsListView: View {
             TopicEditorView(mode: mode)
         }
         .saveErrorAlert($saveError)
+    }
+
+    // MARK: Search
+
+    private struct SearchKey: Equatable {
+        let text: String
+        let depth: Int
+    }
+
+    /// Debounced; typing again cancels the wait, so stale results never replace newer ones.
+    private func search() async {
+        let query = SearchQuery(searchText)
+        guard query.isSearchable else {
+            searchResults = nil
+            return
+        }
+        try? await Task.sleep(for: SearchRule.debounce)
+        guard !Task.isCancelled else {
+            return
+        }
+        let previous = searchResults
+        do {
+            searchResults = try EntrySearch(context: modelContext).results(for: query)
+        } catch {
+            searchResults = SearchResults(query: query, topics: [], entries: [])
+        }
+        if let searchResults, previous?.announcement != searchResults.announcement {
+            AccessibilityNotification.Announcement(searchResults.announcement).post()
+        }
+    }
+
+    /// An entry opens in its topic: both are pushed, so Back goes to the topic and then here.
+    private func openSearchResult(_ destination: SearchResultsView.Destination) {
+        switch destination {
+        case .topic(let topic):
+            path.append(topic)
+        case .entry(let entry):
+            if let topic = entry.topic {
+                path.append(topic)
+            }
+            path.append(entry)
+        }
+    }
+
+    // MARK: Topics
+
+    private var topicList: some View {
+        List {
+            Section {
+                if sections.live.isEmpty {
+                    emptyState
+                }
+                ForEach(sections.live) { topic in
+                    topicLink(topic)
+                }
+            }
+            if !sections.archived.isEmpty {
+                Section {
+                    if isArchivedExpanded {
+                        ForEach(sections.archived) { topic in
+                            topicLink(topic)
+                        }
+                    }
+                } header: {
+                    archivedHeader
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
     }
 
     private var sort: TopicSort {

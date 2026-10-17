@@ -3,6 +3,9 @@ import SwiftUI
 /// A topic in the topics list: color bar, title, last-entry label, and entry count.
 struct TopicRow: View {
     let topic: Topic
+    /// Says "Archived" before the last-entry label, for lists that mix archived and live
+    /// topics (search results).
+    var marksArchived = false
 
     @Environment(\.referenceDate) private var referenceDate
 
@@ -28,10 +31,11 @@ struct TopicRow: View {
     }
 
     private var lastEntryLabel: String {
-        guard let date = topic.lastEntryDate else {
-            return "No entries"
-        }
-        return EntryTimeline.lastEntryLabel(for: date, now: referenceDate ?? .now)
+        let label =
+            topic.lastEntryDate.map {
+                EntryTimeline.lastEntryLabel(for: $0, now: referenceDate ?? .now)
+            } ?? "No entries"
+        return marksArchived && topic.isArchived ? "Archived · \(label)" : label
     }
 }
 
