@@ -182,8 +182,9 @@ struct EntryDraft {
         if case .captured = location { true } else { false }
     }
 
-    /// Changes the topic. The location choice follows the new topic's setting, unless it has
-    /// already been made by hand in this sheet.
+    /// Changes the topic. For a new entry, the location choice follows the new topic's
+    /// setting unless it has already been made by hand in this sheet. For an edit (a move),
+    /// the location is left exactly as it is.
     mutating func setTopic(_ newTopic: Topic?) {
         topic = newTopic
         guard !isEditing, !hasToggledLocation else {
@@ -297,11 +298,14 @@ struct EntryDraft {
         Entry(body: trimmedBody, date: date, topic: topic)
     }
 
-    /// Writes the date and trimmed body to an existing entry, and nothing else (not photos, not
-    /// location).
+    /// Writes the date, the trimmed body, and a changed topic (a move) to an existing entry,
+    /// and nothing else: photos and location travel with the entry untouched.
     func apply(to entry: Entry) {
         entry.date = date
         entry.body = trimmedBody
+        if let topic, entry.topic !== topic {
+            entry.topic = topic
+        }
     }
 
     /// Makes the entry's photos match the draft. Call before saving, for new and edited
@@ -349,7 +353,8 @@ struct EntryComposerView: View {
     let mode: ComposerMode
     let now: Date
 
-    @Query(filter: #Predicate<Topic> { $0.deletedAt == nil && !$0.isArchived })
+    /// Live topics, archived ones included: an edit can move an entry into an archived topic.
+    @Query(filter: #Predicate<Topic> { $0.deletedAt == nil })
     private var topics: [Topic]
 
     @Environment(\.dismiss) private var dismiss
@@ -591,7 +596,7 @@ struct EntryComposerView: View {
 
     /// The topic shown under the title; `nil` when the chip row carries the topic instead.
     private var subtitleTopic: Topic? {
-        isFromList ? nil : draft.topic
+        isFromList || isEditing ? nil : draft.topic
     }
 
     // MARK: Chips
@@ -631,12 +636,22 @@ struct EntryComposerView: View {
     }
 
     /// Only when opened from the topics list; otherwise the topic is in the subtitle.
+    /// A picker from the topics list (live, not archived) and when editing, where choosing
+    /// another topic moves the entry (archived topics included, in their own section).
     @ViewBuilder private var topicChip: some View {
-        if isFromList {
+        if isFromList || isEditing {
+            let choices = TopicDestinations(topics: topics)
             Menu {
                 Picker("Topic", selection: topicSelection) {
-                    ForEach(Topic.sortedByRecentActivity(topics)) { topic in
+                    ForEach(choices.active) { topic in
                         Text(topic.title).tag(Optional(topic))
+                    }
+                    if isEditing, !choices.archived.isEmpty {
+                        Section("Archived") {
+                            ForEach(choices.archived) { topic in
+                                Text(topic.title).tag(Optional(topic))
+                            }
+                        }
                     }
                 }
             } label: {

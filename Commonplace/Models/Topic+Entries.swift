@@ -39,3 +39,24 @@ extension Entry {
         !isTrashed && !(topic?.isTrashed ?? false)
     }
 }
+
+/// The topics an entry can be moved to, or picked for it, in menu order.
+struct TopicDestinations {
+    /// Live, not archived, by recent activity.
+    let active: [Topic]
+    /// Live and archived, by recent activity. Shown in their own section.
+    let archived: [Topic]
+
+    /// - Parameters:
+    ///   - topics: Any topics; trashed ones are dropped.
+    ///   - current: Left out when given: an entry can't be moved to the topic it's in.
+    init(topics: [Topic], excluding current: Topic? = nil) {
+        let candidates = topics.filter { !$0.isTrashed && $0 !== current }
+        active = Topic.sortedByRecentActivity(candidates.filter { !$0.isArchived })
+        archived = Topic.sortedByRecentActivity(candidates.filter(\.isArchived))
+    }
+
+    var isEmpty: Bool {
+        active.isEmpty && archived.isEmpty
+    }
+}

@@ -20,6 +20,9 @@ struct EntryDetailView: View {
     @State private var topic: Topic?
     @State private var entryPendingDelete: Entry?
     @State private var saveError: String?
+    @State private var movedMessage: String?
+    @Query(filter: #Predicate<Topic> { $0.deletedAt == nil })
+    private var liveTopics: [Topic]
     /// Set once the reader has asked to close, so it doesn't ask twice.
     @State private var isLeaving = false
     @State private var position: ScrollPosition
@@ -105,6 +108,7 @@ struct EntryDetailView: View {
             remove(entry, permanently: true)
         }
         .saveErrorAlert($saveError)
+        .transientMessage($movedMessage)
         .fullScreenCover(item: $viewerSelection) { selection in
             PhotoViewer(
                 photos: selection.entry.sortedPhotos,
@@ -173,16 +177,47 @@ struct EntryDetailView: View {
     /// Trashes or deletes an entry, then moves to its neighbor, or back to the topic when it
     /// was the last one. The neighbor is worked out first, while the entry can still be read.
     private func remove(_ entry: Entry, permanently: Bool) {
-        let replacement = EntryTimeline.replacement(for: entry, in: entries)
         let trash = TrashOperations(context: modelContext)
-        let error = permanently ? trash.deletePermanently(entry) : trash.moveToTrash(entry)
+        leavePage(of: entry) {
+            permanently ? trash.deletePermanently(entry) : trash.moveToTrash(entry)
+        }
+    }
+
+    /// Moves the entry to another topic. It leaves this topic's pages the same way a trashed
+    /// entry does.
+    private func move(_ entry: Entry, to destination: Topic) {
+        let moved = leavePage(of: entry) {
+            EntryOperations(context: modelContext).move(entry, to: destination)
+        }
+        guard moved else {
+            return
+        }
+        let message = "Moved to \(destination.title)"
+        if isLeaving {
+            // The reader is closing, so the on-screen confirmation would go with it.
+            AccessibilityNotification.Announcement(message).post()
+        } else {
+            movedMessage = message
+        }
+    }
+
+    /// Runs a change that takes `entry` out of this topic, then shows its neighbor, or goes
+    /// back to the topic when it was the last one.
+    ///
+    /// - Returns: Whether the change succeeded.
+    @discardableResult
+    private func leavePage(of entry: Entry, change: () -> String?) -> Bool {
+        let replacement = EntryTimeline.replacement(for: entry, in: entries)
+        let error = change()
         if let error {
             saveError = error
+            return false
         } else if let replacement {
             current = replacement
         } else {
             leave()
         }
+        return true
     }
 
     /// Back to the topic, once.
@@ -243,6 +278,10 @@ struct EntryDetailView: View {
                 composerMode = .edit(current)
             }
             Divider()
+            MoveToMenu(destinations: TopicDestinations(topics: liveTopics, excluding: topic)) {
+                destination in
+                move(current, to: destination)
+            }
             Button("Move to Trash", systemImage: "trash") {
                 remove(current, permanently: false)
             }

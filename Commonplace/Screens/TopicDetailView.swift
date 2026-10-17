@@ -10,6 +10,9 @@ struct TopicDetailView: View {
     @Environment(\.dismiss) private var dismiss
     /// An entry waiting for its Delete Permanently confirmation.
     @State private var entryPendingDelete: Entry?
+    @State private var movedMessage: String?
+    @Query(filter: #Predicate<Topic> { $0.deletedAt == nil })
+    private var liveTopics: [Topic]
     @State private var composerMode: ComposerMode?
     @State private var topicEditorMode: TopicEditorMode?
     @State private var isConfirmingDelete: Bool
@@ -57,6 +60,9 @@ struct TopicDetailView: View {
                                 composerMode = .edit(entry)
                             }
                             Divider()
+                            MoveToMenu(destinations: moveDestinations) { destination in
+                                move(entry, to: destination)
+                            }
                             Button("Move to Trash", systemImage: "trash") {
                                 saveError = trash.moveToTrash(entry)
                             }
@@ -107,6 +113,19 @@ struct TopicDetailView: View {
             saveError = trash.deletePermanently(entry)
         }
         .saveErrorAlert($saveError)
+        .transientMessage($movedMessage)
+    }
+
+    private var moveDestinations: TopicDestinations {
+        TopicDestinations(topics: liveTopics, excluding: topic)
+    }
+
+    /// The row leaves this timeline; it now belongs to the other topic's.
+    private func move(_ entry: Entry, to destination: Topic) {
+        saveError = EntryOperations(context: modelContext).move(entry, to: destination)
+        if saveError == nil {
+            movedMessage = "Moved to \(destination.title)"
+        }
     }
 
     private var sections: [EntryTimeline.MonthSection] {

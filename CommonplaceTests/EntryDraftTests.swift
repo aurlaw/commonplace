@@ -74,7 +74,8 @@ struct EntryDraftTests {
         #expect(draft.makeEntry().body == "Back at the car.")
     }
 
-    @Test func applyUpdatesBodyAndDateOnly() throws {
+    /// Since I7b a changed topic is written too (a move); photos and location still aren't.
+    @Test func applyUpdatesBodyDateAndTopicOnly() throws {
         let sedona = topic("Sedona trip")
         let createdAt = now.addingTimeInterval(-10_000)
         let deletedAt = now.addingTimeInterval(-50)
@@ -94,14 +95,15 @@ struct EntryDraftTests {
         draft.body = "  New text.\n\nSecond paragraph. "
         draft.date = now.addingTimeInterval(-2_000)
         draft.photos = []
-        draft.topic = topic("Cigars")
+        let cigars = topic("Cigars")
+        draft.topic = cigars
         draft.dictation = .sample
         draft.apply(to: entry)
         try context.save()
 
         #expect(entry.body == "New text.\n\nSecond paragraph.")
         #expect(entry.date == now.addingTimeInterval(-2_000))
-        #expect(entry.topic === sedona)
+        #expect(entry.topic === cigars)
         #expect(entry.photos?.map(\.persistentModelID) == [photo.persistentModelID])
         #expect(entry.latitude == 34.8697)
         #expect(entry.longitude == -111.7610)
