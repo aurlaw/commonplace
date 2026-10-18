@@ -7,7 +7,7 @@ nonisolated enum ModelContainerFactory {
 
     /// The CloudKit-backed store. Only the running app calls this; tests and previews never do.
     static func makePersistent() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: SchemaV1.self)
+        let schema = Schema(versionedSchema: SchemaV2.self)
         let configuration = ModelConfiguration(
             schema: schema,
             cloudKitDatabase: .private(cloudKitContainerID)
@@ -17,7 +17,7 @@ nonisolated enum ModelContainerFactory {
 
     /// An in-memory store with CloudKit disabled, for tests and previews.
     static func makeInMemory() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: SchemaV1.self)
+        let schema = Schema(versionedSchema: SchemaV2.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true,

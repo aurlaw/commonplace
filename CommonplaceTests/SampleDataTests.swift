@@ -144,6 +144,28 @@ struct SampleDataTests {
         }
     }
 
+    @Test func twoSedonaEntriesAndOneDollySodsEntryHaveRoutes() throws {
+        let sedona = try #require(topic("Sedona trip"))
+        let routed = sedona.liveEntries.filter(\.hasRoute)
+        let names = Set(routed.compactMap { $0.route?.name })
+        #expect(names == ["Cathedral Rock at first light", "Airport Mesa loop"])
+        #expect(routed.allSatisfy { $0.hasLocation })
+
+        let dollySods = try #require(topic("Dolly Sods"))
+        let hikeOut = try #require(dollySods.liveEntries.first { $0.hasRoute })
+        #expect(!hikeOut.hasLocation)
+
+        for route in routed.compactMap(\.route) + [hikeOut.route].compactMap({ $0 }) {
+            #expect(route.distanceMeters > 0)
+            #expect(route.elevationGainMeters != nil)
+            #expect(route.startedAt != nil)
+            #expect(route.gpxData.map { (try? GPXParser.parse($0)) != nil } == true)
+            #expect(try RoutePath.decode(try #require(route.pathData)).pointCount >= 2)
+        }
+        // The hike out has a watch pause: two segments.
+        #expect(try RoutePath.decode(try #require(hikeOut.route?.pathData)).segments.count == 2)
+    }
+
     private func topic(_ title: String) -> Topic? {
         try? context.fetch(FetchDescriptor<Topic>(predicate: #Predicate { $0.title == title }))
             .first

@@ -1,6 +1,7 @@
 import Accessibility
 import SwiftData
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A reader for a whole topic: the tapped entry in full, with its neighbors a swipe away.
 ///
@@ -31,6 +32,15 @@ struct EntryDetailView: View {
     @State private var barInsets = EdgeInsets()
     @State private var composerMode: ComposerMode?
     @State private var viewerSelection: PhotoSelection?
+    @Environment(\.routeImporter) private var routeImporter
+    @Environment(\.locationCapture) private var locationCapture
+    /// The entry a route action started on; paging while the picker is open doesn't change it.
+    @State private var routeTarget: Entry?
+    @State private var isPickingRoute = false
+    @State private var isConfirmingRouteReplace = false
+    @State private var isConfirmingRouteRemove = false
+    @State private var pendingRoute: PendingRoute?
+    @State private var routeError: String?
 
     init(entry: Entry) {
         self.entry = entry
@@ -109,6 +119,37 @@ struct EntryDetailView: View {
         }
         .saveErrorAlert($saveError)
         .transientMessage($movedMessage)
+        .fileImporter(
+            isPresented: $isPickingRoute, allowedContentTypes: [.gpx],
+            allowsMultipleSelection: false
+        ) { result in
+            importRoute(result)
+        }
+        .sheet(item: $pendingRoute) { pending in
+            RouteAttachSheet(draft: pending.draft, entry: pending.entry) { useStart in
+                attach(pending, useStartAsLocation: useStart)
+            }
+        }
+        .alert("Replace Route?", isPresented: $isConfirmingRouteReplace) {
+            Button("Choose File") {
+                isPickingRoute = true
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("“\(routeTarget?.route?.name ?? "")” will be removed when you save the new one.")
+        }
+        .alert("Remove Route?", isPresented: $isConfirmingRouteRemove) {
+            Button("Remove", role: .destructive) {
+                if let routeTarget {
+                    saveError = RouteOperations(context: modelContext)
+                        .removeRoute(from: routeTarget)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("“\(routeTarget?.route?.name ?? "")” will be deleted. This can’t be undone.")
+        }
+        .routeErrorAlert($routeError)
         .fullScreenCover(item: $viewerSelection) { selection in
             PhotoViewer(
                 photos: selection.entry.sortedPhotos,
@@ -220,6 +261,43 @@ struct EntryDetailView: View {
         return true
     }
 
+    // MARK: Routes
+
+    /// Reads and parses the picked file off the main actor, then shows the confirm sheet.
+    private func importRoute(_ result: Result<[URL], any Error>) {
+        guard let entry = routeTarget, case .success(let urls) = result, let url = urls.first else {
+            if case .failure(let error) = result {
+                routeError = error.localizedDescription
+            }
+            return
+        }
+        Task {
+            do {
+                let data = try await RouteFile.read(url)
+                let draft = try await routeImporter.makeRoute(
+                    from: data, fileName: url.lastPathComponent)
+                pendingRoute = PendingRoute(entry: entry, draft: draft)
+            } catch let error as GPXError {
+                routeError = error.message
+            } catch {
+                routeError = error.localizedDescription
+            }
+        }
+    }
+
+    /// One save: the route (replacing any), and the start as location when asked.
+    private func attach(_ pending: PendingRoute, useStartAsLocation: Bool) {
+        guard pending.entry.isAvailable else { return }
+        saveError = RouteOperations(context: modelContext).attach(
+            pending.draft, to: pending.entry, useStartAsLocation: useStartAsLocation)
+        if saveError == nil, useStartAsLocation {
+            // Name the new location now if online; otherwise the next backfill does.
+            Task {
+                await locationCapture?.backfillPlaceNames()
+            }
+        }
+    }
+
     /// Back to the topic, once.
     private func leave() {
         guard !isLeaving else {
@@ -277,6 +355,21 @@ struct EntryDetailView: View {
             Button("Edit", systemImage: "pencil") {
                 composerMode = .edit(current)
             }
+            if current.hasRoute {
+                Button("Replace Route…", systemImage: "arrow.triangle.2.circlepath") {
+                    routeTarget = current
+                    isConfirmingRouteReplace = true
+                }
+                Button("Remove Route", systemImage: "minus.circle", role: .destructive) {
+                    routeTarget = current
+                    isConfirmingRouteRemove = true
+                }
+            } else {
+                Button("Add Route…", systemImage: RouteSymbol.name) {
+                    routeTarget = current
+                    isPickingRoute = true
+                }
+            }
             Divider()
             MoveToMenu(destinations: TopicDestinations(topics: liveTopics, excluding: topic)) {
                 destination in
@@ -324,7 +417,7 @@ private struct EntryPage: View {
                 }
                 // Fetched when this page comes on screen; paging is lazy.
                 LinkPreviews(body: entry.body)
-                if entry.hasLocation {
+                if entry.hasLocation || entry.hasRoute {
                     EntryLocationView(entry: entry)
                 }
             }
@@ -338,6 +431,13 @@ private struct EntryPage: View {
         .contentMargins(.top, barInsets.top, for: .scrollIndicators)
         .contentMargins(.bottom, barInsets.bottom, for: .scrollIndicators)
     }
+}
+
+/// A parsed route waiting for the confirm sheet, with the entry it was picked for.
+private struct PendingRoute: Identifiable {
+    let id = UUID()
+    let entry: Entry
+    let draft: RouteDraft
 }
 
 private struct PhotoSelection: Identifiable {
@@ -354,6 +454,28 @@ private struct PhotoSelection: Identifiable {
 #Preview("Dark") {
     EntryDetailPreview()
         .preferredColorScheme(.dark)
+}
+
+#Preview("Route") {
+    EntryDetailPreview(index: 2)
+}
+
+#Preview("Route · Dark") {
+    EntryDetailPreview(index: 2)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Route, no location") {
+    EntryDetailPreview(topic: "Dolly Sods", index: 2)
+}
+
+#Preview("Route, no location · Dark") {
+    EntryDetailPreview(topic: "Dolly Sods", index: 2)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("No route") {
+    EntryDetailPreview(index: 3)
 }
 
 #Preview("No location") {

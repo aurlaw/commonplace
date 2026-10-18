@@ -8,11 +8,11 @@ Phase briefs live in the Tech Obsidian vault under `commonplace/phases/`.
 
 - `Commonplace.xcodeproj` — Xcode project. **Never edit it** (including `project.pbxproj`)
 - `Commonplace/` — app sources
-  - `Models/` — `SchemaV1` models and `TopicColor` (Foundation only, no SwiftUI)
-  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, `TranscriptionService` (with `AudioLevelMeter` and `DictationRule`), `EntrySearch`, `BiometricAuthenticator`, `AppLock`, `LinkMetadataService` (with `CachedLinkMetadataService`), `TextCleaner` (with `FoundationModelsCleaner`), and `TrashOperations` (with `TrashRetention`)
+  - `Models/` — `SchemaV2` models (`Topic`, `Entry`, `Photo`, `Route`), the frozen `SchemaV1`, and `TopicColor` (Foundation only, no SwiftUI)
+  - `Persistence/` — `ModelContainerFactory`, `ModelContext.saveOrRollback()`, `LastUsedTopic`, `ImageProcessor` (with `PhotoLimits` and `ImageDownsampler`), `LocationService`, `LocationCapture`, `TranscriptionService` (with `AudioLevelMeter` and `DictationRule`), `EntrySearch`, `BiometricAuthenticator`, `AppLock`, `LinkMetadataService` (with `CachedLinkMetadataService`), `TextCleaner` (with `FoundationModelsCleaner`), `GPXParser` (with `RouteLimits`), `RouteMetrics` (with `RoutePath`, `RouteProfile`), `RouteImporter` (with `RouteDraft`, `GPXRouteImporter`, and `RouteOperations`), and `TrashOperations` (with `TrashRetention`)
   - `DesignSystem/` — shared components (`TopicRow`, `EntryRow`, `TopicHeader`, `TopicChip`, `ThumbnailStrip`, `PhotoGrid`, `ZoomablePhotoPage`, `FormattedBody`, `LinkPreviews`) and the pure `EntryTimeline`, photo zoom (`PhotoZoom.swift`: `PhotoZoom`, `PhotoViewerState`), the topic map (`TopicMap.swift`: `TopicMapModel`, `MapPin`, `MapGroup`, `TopicMapStyle`), search (`Search.swift`: `SearchableText`, `SearchQuery`, `SearchSnippet`, `SearchResults`), Markdown helpers (`MarkdownBody`, `MarkdownEditing`), and Clean Up helpers (`CleanUp.swift`: `CleanUpChunks`, `CleanUpCheck`, `CleanUpRunner`)
   - `Screens/` — one file per screen or sheet; `RootView` owns the navigation stack
-  - `SampleData/` — the seed, placeholder images, `PreviewContainer`, `FakeLocationService`, `FakeTranscriptionService`, `FakeBiometricAuthenticator`, `FakeLinkMetadataService`, and `FakeTextCleaner`
+  - `SampleData/` — the seed, placeholder images, `PreviewContainer`, `FakeLocationService`, `FakeTranscriptionService`, `FakeBiometricAuthenticator`, `FakeLinkMetadataService`, `FakeTextCleaner`, and `SampleRoutes` (synthetic GPX tracks, with `FakeRouteImporter`)
 - `CommonplaceTests/` — unit tests (Swift Testing), hosted in the app
 - `CommonplaceUITests/` — UI tests; not run by `make test`
 - `docs/design/` — design reference exports
@@ -33,7 +33,7 @@ No device builds, signing or capability changes, git operations, or CloudKit Con
 
 ## Dependencies
 
-No third-party packages, including test helpers and formatters. Apple frameworks only: SwiftUI, SwiftData, PhotosUI, ImageIO, CoreImage, Speech, AVFoundation, CoreLocation, MapKit, LocalAuthentication, LinkPresentation (link previews only), FoundationModels (Clean Up only, on-device `SystemLanguageModel`).
+No third-party packages, including test helpers and formatters. Apple frameworks only: SwiftUI, SwiftData, PhotosUI, ImageIO, CoreImage, Speech, AVFoundation, CoreLocation, MapKit, LocalAuthentication, LinkPresentation (link previews only), FoundationModels (Clean Up only, on-device `SystemLanguageModel`), Charts (the route elevation profile only), UniformTypeIdentifiers.
 
 ## Concurrency (Swift 6)
 
@@ -95,7 +95,7 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - **`ImageProcessor`** (protocol, injected through the `imageProcessor` environment value; `ImageIOProcessor` is the real one) turns picked data into a `ProcessedImage`. It downsamples with ImageIO, bakes in EXIF orientation, never upscales, and drops all metadata including GPS. When `CGImageSourceCreateThumbnailAtIndex` fails (seen on a device with imported, TIFF-based RAW photos, which ImageIO could neither thumbnail nor decode), `ImageDownsampler` falls back in order to: Core Image's RAW pipeline (`CIRAWFilter`), the largest image in the file ImageIO can decode, and last the file's embedded preview, which may be small. The fallbacks use much more memory than the fast path. `process` is `@concurrent`, so it runs off the main actor; picked photos are processed one at a time, in pick order
 - **`DraftPhoto`** is what the composer holds: `.existing(Photo)` for saved photos and `.new(id:image:thumbnail:)` for picked ones. New photos are values, not inserted models, until Save, so Cancel or a failed save can't leave orphaned `Photo` records
 - `EntryDraft.applyPhotos(to:in:)` makes the entry's photos match the draft for new and edited entries alike: it inserts new photos, deletes dropped ones, and rewrites `order` 0…n-1. It touches nothing else on the entry. Adding or removing a photo makes the draft dirty
-- **Photo hard-delete exception:** removing a photo in the composer calls `modelContext.delete(photo)` on Save, with no Trash and no confirmation. This is the one delete outside `TrashOperations`. Cancel discards the removal
+- **Photo hard-delete exception:** removing a photo in the composer calls `modelContext.delete(photo)` on Save, with no Trash and no confirmation. With removing a route (see Routes), one of the two deletes outside `TrashOperations`. Cancel discards the removal
 - **Never show a full-size bitmap in a grid or strip.** Small tiles and strips use `thumbnailData` through `PhotoImage`. Anything larger uses `DownsampledPhotoImage`, which decodes `imageData` off the main actor at a stated pixel size and shows the thumbnail until it is ready (and whenever `imageData` is still `nil` after a sync). The viewer keeps a full-size bitmap for the visible page only
 
 ### Photo viewer zoom
@@ -214,6 +214,22 @@ Both sheets confirm "Discard changes?" on Cancel when the draft is dirty and set
 - The topic chip uses `dismiss()`, which is right because entry detail is always pushed on top of its topic or that topic's map: search results push the topic and then the entry (see Search), and from the topic map the chip returns to the map
 - **Back gesture vs. paging — not yet verified on a device.** iOS 26 added a content-area back swipe in navigation stacks, which can compete with horizontal paging. Required: a mid-topic horizontal swipe pages, and the leading-edge back gesture still pops. Only supported SwiftUI APIs are used and the system back gesture is not disabled. Record the observed behavior here once checked
 
+### Routes (GPX)
+
+- **One route per entry, attached from that entry only.** Entry detail's ••• menu has **Add Route…** (or **Replace Route…** / **Remove Route** when it has one), acting on `current`. No import in topic detail, no batch import, no matching files to entries. Routes are drawn on the entry detail map and the Route view only — **never on the topic map (I13)**
+- **GPX type:** `UTType.gpx` is `com.topografix.gpx` (declared under Target → Info → Imported Type Identifiers: conforms to `public.xml`, extension `gpx`, MIME `application/gpx+xml`). Without that declaration it falls back to `UTType(filenameExtension: "gpx", conformingTo: .xml)`. The declaration is in `Commonplace/Info.plist` (`UTImportedTypeDeclarations`). **Whether `.gpx` files are selectable in the Files picker is not yet verified on a device** `[NEEDS VERIFICATION]`
+- **Import flow:** `.fileImporter` (one file) → `RouteFile.read` (security-scoped, off the main actor, files over 10 MB refused before reading) → `RouteImporter.makeRoute(from:fileName:)` (`GPXRouteImporter`, `@concurrent`: parses and computes off the main actor into a `Sendable` `RouteDraft`) → `RouteAttachSheet` → Save → `RouteOperations.attach` (one `saveOrRollback()`). Cancel saves nothing. Errors show "Couldn’t Add Route" with `GPXError.message` (`.routeErrorAlert(_:)`). `FakeRouteImporter` is for previews; the real importer has no device dependencies, so the app and tests use it
+- **Confirm sheet:** name, recorded date, stats, a still map of the line; a quiet footer when the track's day differs from the entry's ("Recorded Oct 14 · entry dated Oct 15", `RouteAttachText.dateNote`); and **Use route start as entry location** (off by default) only when the entry has no location. That sets the coordinates with no place name, and the I6 backfill names it (run right after the save too). **An existing location is never replaced**
+- **Replace** confirms before the picker; the old `Route` is deleted when the new one is saved. **Remove** confirms, then deletes the `Route` outright — **a hard delete, like removing a photo; no Trash.** Trashing an entry keeps its route; restoring shows it; a permanent delete or purge cascades (`Entry.route` is `.cascade`)
+- **`GPXParser`** (pure, `XMLParser`, namespaces processed so prefixes don't matter): every `<trk>/<trkseg>/<trkpt>` in order, one segment per `<trkseg>`; with no track points, `<rte>/<rtept>` as one segment. `<wpt>`, extensions, and unknown elements are ignored. The name is the first non-empty `<trk><name>` (CDATA included), else `<rte><name>`, else the file name without its extension (`RouteDraft.name`), else "Route". Times are ISO 8601 with or without fractional seconds. Typed errors: `tooLarge` (> 10 MB), `notGPX` (not XML, or the root isn't `<gpx>`), `noTrack` (< 2 points), `tooManyPoints` (> 50,000) — limits in `RouteLimits`
+- **`RouteMetrics`** (pure, tested; no MapKit types): **distance** is the haversine sum (R = 6,371,000 m) between consecutive points within each segment, **not across segment gaps**. **Elevation gain** uses a **5 m hysteresis** over all elevations in order (points without `<ele>` skipped): `ref` = first; a rise of ≥ 5 m adds the rise and moves `ref`; a fall of ≥ 5 m moves `ref`; `nil` with no elevations. Min / max elevation, first / last timestamp (Time = last − first; no moving time, pace, or calories), start coordinate. Michael's Broken Arrow export: 3.00 mi, 125 m / 411 ft gain (771 ft raw), 96 min
+- **Cached drawing data:** `pathData` is Douglas–Peucker per segment at 5 m on a local equirectangular projection, the tolerance doubled until ≤ 2,000 points; segments stay separate so gaps aren't drawn. `RoutePath` encodes `[[lat, lon]]` per segment; `profileData` is `RouteProfile`, 200 samples of `[distance m, elevation m]` evenly spaced by distance from 0 to the full distance (interpolated; omitted with no elevations). Both are binary property lists, inline. **Display reads only these, decoded off the main actor (`RoutePathDecoder`) in a `.task` — never the GPX file.** Paging is lazy, so only visible pages decode
+- **Entry detail map** (`EntryLocationView`): with a route it draws `MapPolyline`s in the topic color (4 pt), keeps the pin, fits the camera to the route plus the pin with an explicit region (`RouteCamera.region`, built on `TopicMapModel.fittingRegion`, min 500 m), and shows `RouteStatsRow` (Distance · Elev. gain · Time; gain and time omitted when unknown) under the place line. **Tapping it pushes the Route view** (`AppRoute.route(entry)`); without a route it opens Apple Maps exactly as in I6. A route with no location still shows the map, without a pin. VoiceOver: "Location: …. Route, 3.0 miles, 397 feet gain. Opens route."
+- **Route view** (`RouteView`, pushed): interactive `Map` with the polyline, a Start marker, and the entry pin; a bottom panel with the name, recorded date, stats, the elevation profile (Swift Charts area + line, locale units, `accessibilityChartDescriptor` summary "Elevation from 4,282 to 4,631 feet"), and **Open in Maps** for the entry's location (hidden without one; Apple Maps can't show the track). User location only when already authorized
+- **Units** (`RouteStats`, tested): miles and feet in the US; miles and meters in the UK; kilometers and meters elsewhere, via `Measurement` formatting. Time is `1h 36m` (spoken "1 hour, 36 minutes")
+- **Timeline row:** `EntryRow` shows the route glyph (`RouteSymbol.name`, `point.topright.arrow.triangle.backward.to.point.bottomleft.scurvepath`, SF Symbols 2024) after the time when the entry has a route
+- **Seed:** Cathedral Rock (out-and-back) and Airport Mesa (loop) have synthetic routes; a Dolly Sods entry ("Hiked out to Bear Rocks") has a two-segment route and no location. `SampleRoutes` generates the tracks and their GPX; no recorded track ships in the app
+
 ### Shell mode — off
 
 `AppConfig.usesSampleData` is `false` since I2: the app runs on `ModelContainerFactory.makePersistent()` with the real clock (`referenceDate` is `nil`). The switch is kept so the shell can be turned back on for design work; when `true`, the app runs on a seeded in-memory container (`SampleData.makeContainer()`) and nothing persists.
@@ -229,7 +245,15 @@ Every `#Preview` uses the seeded container through `.sampleData()` (defined besi
 
 ## Data model
 
-Models are defined inside `SchemaV1` (a `VersionedSchema`, version `1.0.0`) and exposed through top-level typealiases (`Topic`, `Entry`, `Photo`). App code never refers to the version namespace.
+Models are defined inside `SchemaV2` (a `VersionedSchema`, version `2.0.0`) and exposed through top-level typealiases (`Topic`, `Entry`, `Photo`, `Route`). App code never refers to the version namespace.
+
+`SchemaV1` (`1.0.0`) is **frozen**: its own copies of `Topic`, `Entry`, and `Photo` with only the stored properties, relationships, and an init, exactly as V1 shipped. Only the migration test uses it. Never change it.
+
+### Route (V2, I16)
+
+- `Route`: `gpxData: Data?` (`.externalStorage`, synced as a CloudKit asset — the original file, so stats can be recomputed), `name`, `startedAt?`, `endedAt?`, `distanceMeters`, `elevationGainMeters?`, `minElevationMeters?`, `maxElevationMeters?`, `startLatitude?`, `startLongitude?`, `pathData?`, `profileData?` (inline, small), `createdAt`, and `entry` (the inverse side)
+- `Entry.route: Route?` — `@Relationship(deleteRule: .cascade, inverse: \Route.entry)`; `Entry.hasRoute`
+- **CloudKit Production needs a schema deploy for V2.** Run a debug build against the Development environment and add a route so `CD_Route` (with `CD_gpxData` as an asset) and `CD_Entry.CD_route` exist, then CloudKit Console → Deploy Schema Changes, **before** a build with V2 reaches a device with real data
 
 ### Location fields
 
@@ -257,13 +281,13 @@ Once the schema is deployed to the CloudKit production environment, only additiv
 
 ### Migration plan — deliberately deferred
 
-`SchemaV1` is a `VersionedSchema`, but **no `SchemaMigrationPlan` is created or passed to `ModelContainer`**. With one schema version there is nothing to migrate, and there are reports of `ModelContainer` failing to load when CloudKit is enabled and a migration plan is passed. Do not add a plan reflexively. Add one only if a `SchemaV2` needs it, and verify against the then-current SwiftData behavior first.
+**No `SchemaMigrationPlan` is created or passed to `ModelContainer`**, even with `SchemaV2`. There are reports of `ModelContainer` failing to load when CloudKit is enabled and a migration plan is passed. V1 → V2 is additive (a new model and an optional relationship), and SwiftData's automatic lightweight migration handles it: **verified (iOS 27 simulator, I16)** by `SchemaMigrationTests`, which writes an on-disk store with `SchemaV1`, closes it, and reopens it with `SchemaV2` and no plan — data intact, `route == nil`, and a new `Route` saves. Do not add a plan reflexively. Add one only if a later schema needs a non-additive step, and verify against the then-current SwiftData behavior first
 
 ### Soft delete and Trash
 
 - **Move to Trash is the default delete everywhere**: it sets `deletedAt`, needs no confirmation, and syncs like any edit. There is no undo toast; Trash is the undo
 - **All of it goes through `TrashOperations`** (`Persistence/TrashOperations.swift`): `moveToTrash`, `restore`, `deletePermanently`, `emptyTrash`, `purge(retention:)`, and the counts used in confirmation copy. Each operation ends in `saveOrRollback()` and returns the error message for `.saveErrorAlert(_:)`
-- **`modelContext.delete` is called only in `TrashOperations`** (permanent delete, Empty Trash, purge) and in `EntryDraft.applyPhotos` (removing a photo from an entry; see Photos). Nowhere else. Cascades (topic → entries → photos) fire only then
+- **`modelContext.delete` is called only in `TrashOperations`** (permanent delete, Empty Trash, purge), in `EntryDraft.applyPhotos` (removing a photo from an entry; see Photos), and in `RouteOperations` (removing or replacing a route; see Routes). Nowhere else. Cascades (topic → entries → photos and route) fire only then
 - **Every permanent delete is confirmed** with accurate counts. A topic's count is every entry the delete removes, including ones already in Trash (`TrashOperations.entriesDeleted(with:)`). Entries share one alert, `.deleteEntryAlert(_:delete:)`
 - **Trashing a topic stamps only the topic.** Its entries keep their own `deletedAt`. Restoring the topic brings back the entries that were live, not ones trashed individually, and keeps its archived state
 - **Restoring an entry whose topic is in Trash restores the topic too**, after a confirmation that names it ("Restore Both"). `TrashOperations.restore(_ entry:)` does both; the view asks first

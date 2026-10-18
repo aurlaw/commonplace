@@ -8,6 +8,8 @@ enum AppRoute: Hashable {
     case settings
     /// The topic's located entries on a map.
     case topicMap(Topic)
+    /// The entry's route, full screen (I16).
+    case route(Entry)
 }
 
 /// The app's single navigation stack: Topics → Topic → Entry, plus Trash and Settings.
@@ -36,6 +38,7 @@ struct RootView: View {
                     case .trash: TrashView()
                     case .settings: SettingsView()
                     case .topicMap(let topic): TopicMapView(topic: topic)
+                    case .route(let entry): RouteView(entry: entry)
                     }
                 }
         }

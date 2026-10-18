@@ -22,9 +22,15 @@ struct EntryRow: View {
             }
             .frame(width: 34)
             VStack(alignment: .leading, spacing: 4) {
-                Text(EntryTimeline.time(entry.date))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(EntryTimeline.time(entry.date))
+                    if entry.hasRoute {
+                        Image(systemName: RouteSymbol.name)
+                            .accessibilityLabel("Route")
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
                 Text(SearchableText.plain(entry.body))
                     .font(.subheadline)
                     .lineLimit(2)

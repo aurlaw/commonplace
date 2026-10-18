@@ -16,11 +16,11 @@ struct ModelContainerFactoryTests {
         }
     }
 
-    @Test func inMemoryContainerUsesSchemaV1() throws {
+    @Test func inMemoryContainerUsesSchemaV2() throws {
         let container = try ModelContainerFactory.makeInMemory()
 
         let entityNames = Set(container.schema.entities.map(\.name))
-        #expect(entityNames == ["Topic", "Entry", "Photo"])
+        #expect(entityNames == ["Topic", "Entry", "Photo", "Route"])
     }
 
     /// `CommonplaceApp` relies on this variable to pick the in-memory container under tests.

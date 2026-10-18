@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-extension SchemaV1 {
+extension SchemaV2 {
     @Model
     final class Entry {
         /// User-editable; drives timeline order.
@@ -19,6 +19,10 @@ extension SchemaV1 {
         @Relationship(deleteRule: .cascade, inverse: \Photo.entry)
         var photos: [Photo]? = []
 
+        /// At most one GPX track (I16). Removed with a hard delete; purging the entry cascades.
+        @Relationship(deleteRule: .cascade, inverse: \Route.entry)
+        var route: Route? = nil
+
         init(
             body: String = "",
             date: Date = .now,
@@ -35,6 +39,8 @@ extension SchemaV1 {
 
         /// True only when both coordinates are set.
         var hasLocation: Bool { latitude != nil && longitude != nil }
+
+        var hasRoute: Bool { route != nil }
 
         /// CloudKit-backed relationships are unordered, so order is explicit.
         var sortedPhotos: [Photo] {

@@ -127,7 +127,8 @@ private struct Seeder {
             instead and had the whole west side to ourselves.
             """,
             photos: 3,
-            place: Place(34.8553, -111.7800, "Airport Mesa")
+            place: Place(34.8553, -111.7800, "Airport Mesa"),
+            route: SampleRoutes.airportMesa
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 10, 3, 19, 24),
@@ -165,7 +166,8 @@ private struct Seeder {
             Trail info: https://www.fs.usda.gov/recarea/coconino/recarea/?recid=55291
             """,
             photos: 6,
-            place: Place(34.8253, -111.7885, "Cathedral Rock Trailhead")
+            place: Place(34.8253, -111.7885, "Cathedral Rock Trailhead"),
+            route: SampleRoutes.cathedralRock
         )
         addEntry(
             to: topic, at: SampleData.date(2026, 10, 1, 15, 15),
@@ -260,6 +262,14 @@ private struct Seeder {
         )
         topic.isArchived = true
         addEntry(
+            to: topic, at: SampleData.date(2026, 6, 14, 13, 10),
+            """
+            Hiked out to Bear Rocks. Phone stayed off to save the battery, so the only record \
+            is the watch track.
+            """,
+            route: SampleRoutes.dollySodsHikeOut
+        )
+        addEntry(
             to: topic, at: SampleData.date(2026, 6, 14, 7, 20),
             "Camped at the Forks of Red Creek. Cold enough for a hat in June.",
             photos: 2,
@@ -315,6 +325,7 @@ private struct Seeder {
         _ body: String,
         photos photoCount: Int = 0,
         place: Place? = nil,
+        route: ParsedTrack? = nil,
         deletedAt: Date? = nil
     ) {
         let entry = Entry(body: body, date: date, topic: topic, createdAt: date)
@@ -323,6 +334,11 @@ private struct Seeder {
         entry.longitude = place?.longitude
         entry.placeName = place?.name
         context.insert(entry)
+        if let route, let draft = SampleRoutes.draft(route) {
+            let model = draft.makeRoute(createdAt: date)
+            context.insert(model)
+            entry.route = model
+        }
         for order in 0..<photoCount {
             let photo = Photo(
                 imageData: PlaceholderImage.jpegData(seed: nextPhotoSeed, longEdge: 900),
