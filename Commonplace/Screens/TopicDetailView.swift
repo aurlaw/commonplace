@@ -82,6 +82,13 @@ struct TopicDetailView: View {
         .navigationTitle(topic.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if hasMap {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(value: AppRoute.topicMap(topic)) {
+                        Label("Map", systemImage: "map")
+                    }
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 overflowMenu
             }
@@ -132,6 +139,11 @@ struct TopicDetailView: View {
         EntryTimeline.groupByMonth(topic.liveEntries)
     }
 
+    /// The map is offered only when it has something to show.
+    private var hasMap: Bool {
+        !TopicMapModel.locatedEntries(for: topic).isEmpty
+    }
+
     private var trash: TrashOperations {
         TrashOperations(context: modelContext)
     }
@@ -155,6 +167,11 @@ struct TopicDetailView: View {
         Menu {
             Button("Edit Topic", systemImage: "pencil") {
                 topicEditorMode = .edit(topic)
+            }
+            if hasMap {
+                NavigationLink(value: AppRoute.topicMap(topic)) {
+                    Label("Show Map", systemImage: "map")
+                }
             }
             Divider()
             Button(

@@ -14,6 +14,8 @@ nonisolated struct FakeLocationService: LocationService {
     var placeName: String? = "Cathedral Rock Trailhead"
     /// Stands for being offline.
     var failsGeocoding = false
+    /// Whether access counts as already granted.
+    var isAuthorized = false
 
     func currentLocation(timeout: Duration) async throws -> Coordinate {
         guard delay <= timeout else {

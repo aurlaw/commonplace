@@ -60,6 +60,10 @@ nonisolated protocol LocationService: Sendable {
     /// The place name for a coordinate, or `nil` when nothing nameable is there. Throws when
     /// the lookup itself fails, such as offline.
     func placeName(for coordinate: Coordinate) async throws -> String?
+
+    /// Whether When In Use (or Always) access is already granted. Only reads the status, so it
+    /// never asks; screens that must not prompt (the topic map) check this.
+    var isAuthorized: Bool { get }
 }
 
 nonisolated enum LocationCaptureRule {
@@ -140,6 +144,14 @@ nonisolated struct CoreLocationService: LocationService {
             city: item.addressRepresentations?.cityName
         )
         return candidate.placeName
+    }
+
+    var isAuthorized: Bool {
+        // Reading the status of a fresh manager doesn't ask for access.
+        switch CLLocationManager().authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways: true
+        default: false
+        }
     }
 
     private static func isDenied(_ update: CLLocationUpdate) -> Bool {

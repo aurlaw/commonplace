@@ -242,6 +242,16 @@ struct EntryTimelineTests {
                 EntryTimeline.composerDate(date(2026, 10, 5, 6, 42), now: now, calendar: calendar))
                 == "Today, 6:42 AM"
         )
+        #expect(
+            clockTime(EntryTimeline.dateAndTime(moment, now: now, calendar: calendar))
+                == "Oct 2, 6:10 AM"
+        )
+        #expect(
+            clockTime(
+                EntryTimeline.dateAndTime(
+                    date(2025, 10, 2, 6, 10), now: now, calendar: calendar))
+                == "Oct 2, 2025, 6:10 AM"
+        )
     }
 
     @Test func entryCountPluralizes() {

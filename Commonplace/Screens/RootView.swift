@@ -2,10 +2,12 @@ import OSLog
 import SwiftData
 import SwiftUI
 
-/// Destinations that aren't a model value.
+/// Destinations that aren't a model value on its own.
 enum AppRoute: Hashable {
     case trash
     case settings
+    /// The topic's located entries on a map.
+    case topicMap(Topic)
 }
 
 /// The app's single navigation stack: Topics → Topic → Entry, plus Trash and Settings.
@@ -33,6 +35,7 @@ struct RootView: View {
                     switch route {
                     case .trash: TrashView()
                     case .settings: SettingsView()
+                    case .topicMap(let topic): TopicMapView(topic: topic)
                     }
                 }
         }

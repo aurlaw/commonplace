@@ -17,7 +17,7 @@ struct EntryLocationView: View {
                 placeName: entry.placeName, latitude: latitude, longitude: longitude
             )
             Button {
-                openInMaps(center, name: entry.placeName)
+                MapsApp.open(center, name: entry.placeName)
             } label: {
                 VStack(alignment: .leading, spacing: 8) {
                     Map(
@@ -48,8 +48,11 @@ struct EntryLocationView: View {
             .accessibilityAddTraits(.isButton)
         }
     }
+}
 
-    private func openInMaps(_ coordinate: CLLocationCoordinate2D, name: String?) {
+/// Apple Maps, opened at a spot.
+enum MapsApp {
+    static func open(_ coordinate: CLLocationCoordinate2D, name: String?) {
         let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         let item = MKMapItem(location: location, address: nil)
         item.name = name

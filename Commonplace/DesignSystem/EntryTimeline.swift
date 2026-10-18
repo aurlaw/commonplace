@@ -129,6 +129,11 @@ nonisolated enum EntryTimeline {
         date.formatted(style(calendar).hour().minute())
     }
 
+    /// "Oct 2, 6:10 AM", or "Oct 2, 2025, 6:10 AM" outside the current year.
+    static func dateAndTime(_ date: Date, now: Date, calendar: Calendar = .current) -> String {
+        "\(shortDate(date, now: now, calendar: calendar)), \(time(date, calendar: calendar))"
+    }
+
     /// "Friday, October 2, 2026"
     static func fullDate(_ date: Date, calendar: Calendar = .current) -> String {
         date.formatted(style(calendar).weekday(.wide).month(.wide).day().year())
