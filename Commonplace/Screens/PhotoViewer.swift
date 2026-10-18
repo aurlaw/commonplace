@@ -2,40 +2,54 @@ import SwiftUI
 import UIKit
 
 /// Full-screen, swipeable photos with a counter, a caption, and a filmstrip. Always dark.
+///
+/// Photos zoom with pinch and double-tap (`ZoomablePhotoPage`); swiping pages only at fit, and
+/// changing photos resets the zoom. A single tap hides or shows the chrome.
 struct PhotoViewer: View {
     let photos: [Photo]
     let caption: String
 
     @Environment(\.dismiss) private var dismiss
-    @State private var selection: Int
+    @State private var state: PhotoViewerState
 
     init(photos: [Photo], startIndex: Int, caption: String) {
         self.photos = photos
         self.caption = caption
-        _selection = State(initialValue: startIndex)
+        _state = State(initialValue: PhotoViewerState(selection: startIndex))
     }
 
     var body: some View {
         NavigationStack {
-            TabView(selection: $selection) {
+            TabView(selection: $state.selection) {
                 ForEach(Array(photos.enumerated()), id: \.element.id) { index, photo in
-                    // Only the visible page holds a full-size bitmap.
-                    DownsampledPhotoImage(
+                    // Only the visible page holds a full-size bitmap, and only it can be zoomed.
+                    let isActive = index == state.selection
+                    ZoomablePhotoPage(
                         photo: photo,
-                        maxPixelSize: PhotoLimits.imageMaxPixelSize,
-                        contentMode: .fit,
-                        isActive: index == selection
+                        isActive: isActive,
+                        zoomScale: isActive ? $state.zoomScale : .constant(PhotoZoom.minimumScale),
+                        onSingleTap: toggleChrome
                     )
                     .tag(index)
                     .accessibilityElement()
                     .accessibilityAddTraits(.isImage)
                     .accessibilityLabel("Photo \(index + 1) of \(photos.count)")
+                    .accessibilityZoomAction(zoom)
+                    .accessibilityAction(
+                        named: state.isChromeHidden ? "Show controls" : "Hide controls",
+                        toggleChrome)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            // Zoomed, drags pan the photo; zoom out to move on.
+            .scrollDisabled(!state.isPagingEnabled)
             .background(.black)
             .safeAreaInset(edge: .bottom) {
                 filmstrip
+                    .opacity(state.isChromeHidden ? 0 : 1)
+                    .allowsHitTesting(!state.isChromeHidden)
+                    .accessibilityHidden(state.isChromeHidden)
+                    .animation(.easeInOut(duration: 0.2), value: state.isChromeHidden)
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -46,7 +60,7 @@ struct PhotoViewer: View {
                 }
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 1) {
-                        Text("\(selection + 1) of \(photos.count)")
+                        Text("\(state.selection + 1) of \(photos.count)")
                             .font(.subheadline.weight(.semibold))
                             .monospacedDigit()
                         Text(caption)
@@ -60,8 +74,25 @@ struct PhotoViewer: View {
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarVisibility(state.isChromeHidden ? .hidden : .visible, for: .navigationBar)
         }
+        .statusBarHidden(state.isChromeHidden)
         .environment(\.colorScheme, .dark)
+    }
+
+    private func toggleChrome() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            state.toggleChrome()
+        }
+    }
+
+    /// VoiceOver zoom: one whole step in or out, applied to the page by `ZoomablePhotoPage`.
+    private func zoom(_ action: AccessibilityZoomGestureAction) {
+        let zoomingIn = action.direction == .zoomIn
+        let scale = PhotoZoom.steppedScale(from: state.zoomScale, zoomingIn: zoomingIn)
+        guard scale != state.zoomScale else { return }
+        state.zoomScale = scale
+        AccessibilityNotification.Announcement(zoomingIn ? "Zoomed in" : "Zoomed out").post()
     }
 
     private var filmstrip: some View {
@@ -69,18 +100,18 @@ struct PhotoViewer: View {
             ForEach(Array(photos.enumerated()), id: \.element.id) { index, photo in
                 Button {
                     withAnimation {
-                        selection = index
+                        state.selection = index
                     }
                 } label: {
                     PhotoImage(data: photo.thumbnailData, cornerRadius: 4)
-                        .frame(width: index == selection ? 56 : 30, height: 42)
-                        .opacity(index == selection ? 1 : 0.7)
+                        .frame(width: index == state.selection ? 56 : 30, height: 42)
+                        .opacity(index == state.selection ? 1 : 0.7)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Show photo \(index + 1)")
             }
         }
-        .animation(.default, value: selection)
+        .animation(.default, value: state.selection)
         .padding(.bottom, 12)
     }
 }
